@@ -14,6 +14,7 @@ from utils.chart_theme import COLOR_PALETTE, apply_chart_theme
 
 
 def render(conn):
+    """Отрисовка страницы «Календарь»: отпуска и проекты по сотрудникам, конфликты. conn — подключение к БД."""
     st.header("🗓️ Календарь отпусков и проектов")
     df_emp = repository.load_employees(conn)
     if df_emp.empty:

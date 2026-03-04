@@ -15,6 +15,7 @@ from components import page_header
 
 
 def render(conn, db_path=None):
+    """Отрисовка страницы «Дашборд»: KPI по проектам, загрузка, прогноз. conn — подключение к БД."""
     page_header("🖥️", "Дашборд")
     df_projects = repository.load_projects(conn)
     df_employees = repository.load_employees(conn)

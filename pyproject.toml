@@ -1,0 +1,33 @@
+[project]
+name = "planner"
+version = "3.0.0"
+description = "Планировщик ресурсов отдела"
+requires-python = ">=3.10"
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312", "py313"]
+include = '\.pyi?$'
+exclude = '''
+/(\.git|__pycache__|\.venv|venv|\.pytest_cache)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+skip = [".venv", "venv", "__pycache__", ".git"]
+known_first_party = ["app_pages", "components", "utils"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+exclude = [".venv", "venv", "__pycache__", ".git"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app_pages", "components", "utils"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

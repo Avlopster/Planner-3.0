@@ -2,6 +2,7 @@
 """Юнит-тесты для Planner — проверка расчётов и бизнес-логики."""
 import sys
 import os
+import sqlite3
 
 # Добавляем корень проекта в путь
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,8 +11,29 @@ import pytest
 import pandas as pd
 from datetime import date, timedelta
 
+import database as db
+import repository
 from utils.date_utils import date_range_list
 from utils.type_utils import safe_int
+
+
+def _vacation_conn(vacations_list):
+    """Создаёт in-memory SQLite с таблицей vacations и вставленными записями. vacations_list: [(employee_id, start, end), ...]."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """CREATE TABLE vacations (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           employee_id INTEGER NOT NULL,
+           start_date DATE NOT NULL,
+           end_date DATE NOT NULL)"""
+    )
+    for (emp_id, start, end) in vacations_list:
+        conn.execute(
+            "INSERT INTO vacations (employee_id, start_date, end_date) VALUES (?, ?, ?)",
+            (emp_id, start.isoformat() if hasattr(start, 'isoformat') else start, end.isoformat() if hasattr(end, 'isoformat') else end),
+        )
+    conn.commit()
+    return conn
 
 
 class TestDateRangeList:
@@ -37,69 +59,61 @@ class TestDateRangeList:
         assert result[-1] == end
 
 
-def check_vacation_overlap_logic(emp_vacations, new_start, new_end, exclude_vacation_id=None):
-    """
-    Логика проверки пересечения отпусков без БД.
-    emp_vacations: list of dicts with keys id, start_date, end_date
-    """
-    for vac in emp_vacations:
-        if exclude_vacation_id is not None and vac['id'] == exclude_vacation_id:
-            continue
-        vac_start = vac['start_date']
-        vac_end = vac['end_date']
-        if new_start <= vac_end and new_end >= vac_start:
-            return True, vac
-    return False, None
-
-
 class TestCheckVacationOverlap:
-    """Тесты для проверки пересечения отпусков."""
+    """Тесты проверки пересечения отпусков через repository.check_vacation_overlap (in-memory БД)."""
 
     def test_no_overlap(self):
-        vacs = [
-            {'id': 1, 'start_date': date(2025, 1, 1), 'end_date': date(2025, 1, 10)},
-        ]
-        overlap, _ = check_vacation_overlap_logic(
-            vacs, date(2025, 1, 15), date(2025, 1, 20)
-        )
-        assert overlap is False
+        conn = _vacation_conn([(1, date(2025, 1, 1), date(2025, 1, 10))])
+        try:
+            overlap, _ = repository.check_vacation_overlap(
+                conn, 1, date(2025, 1, 15), date(2025, 1, 20)
+            )
+            assert overlap is False
+        finally:
+            conn.close()
 
     def test_overlap_same_period(self):
-        vacs = [
-            {'id': 1, 'start_date': date(2025, 1, 5), 'end_date': date(2025, 1, 15)},
-        ]
-        overlap, _ = check_vacation_overlap_logic(
-            vacs, date(2025, 1, 10), date(2025, 1, 20)
-        )
-        assert overlap is True
+        conn = _vacation_conn([(1, date(2025, 1, 5), date(2025, 1, 15))])
+        try:
+            overlap, _ = repository.check_vacation_overlap(
+                conn, 1, date(2025, 1, 10), date(2025, 1, 20)
+            )
+            assert overlap is True
+        finally:
+            conn.close()
 
     def test_overlap_inside(self):
-        vacs = [
-            {'id': 1, 'start_date': date(2025, 1, 1), 'end_date': date(2025, 1, 31)},
-        ]
-        overlap, _ = check_vacation_overlap_logic(
-            vacs, date(2025, 1, 10), date(2025, 1, 15)
-        )
-        assert overlap is True
+        conn = _vacation_conn([(1, date(2025, 1, 1), date(2025, 1, 31))])
+        try:
+            overlap, _ = repository.check_vacation_overlap(
+                conn, 1, date(2025, 1, 10), date(2025, 1, 15)
+            )
+            assert overlap is True
+        finally:
+            conn.close()
 
     def test_exclude_self_on_edit(self):
-        vacs = [
-            {'id': 1, 'start_date': date(2025, 1, 5), 'end_date': date(2025, 1, 15)},
-        ]
-        overlap, _ = check_vacation_overlap_logic(
-            vacs, date(2025, 1, 5), date(2025, 1, 15), exclude_vacation_id=1
-        )
-        assert overlap is False
+        conn = _vacation_conn([(1, date(2025, 1, 5), date(2025, 1, 15))])
+        try:
+            overlap, _ = repository.check_vacation_overlap(
+                conn, 1, date(2025, 1, 5), date(2025, 1, 15), exclude_vacation_id=1
+            )
+            assert overlap is False
+        finally:
+            conn.close()
 
     def test_overlap_with_another(self):
-        vacs = [
-            {'id': 1, 'start_date': date(2025, 1, 1), 'end_date': date(2025, 1, 10)},
-            {'id': 2, 'start_date': date(2025, 1, 20), 'end_date': date(2025, 1, 25)},
-        ]
-        overlap, _ = check_vacation_overlap_logic(
-            vacs, date(2025, 1, 8), date(2025, 1, 22)
-        )
-        assert overlap is True
+        conn = _vacation_conn([
+            (1, date(2025, 1, 1), date(2025, 1, 10)),
+            (1, date(2025, 1, 20), date(2025, 1, 25)),
+        ])
+        try:
+            overlap, _ = repository.check_vacation_overlap(
+                conn, 1, date(2025, 1, 8), date(2025, 1, 22)
+            )
+            assert overlap is True
+        finally:
+            conn.close()
 
 
 def department_load_summary_logic(employees, days_count, total_used, project_days=30, needed_multiplier=1.5):
@@ -397,3 +411,118 @@ class TestGanttProjectCompletionPercent:
         ])
         # 10 + 20 days; completed 5 + 20 = 25 -> 25/30
         assert gantt_project_completion_percent(1, date(2025, 1, 1), phases) == pytest.approx(25 / 30)
+
+
+def _minimal_app_conn():
+    """In-memory БД с полной схемой и миграциями для тестов repository/load_calculator."""
+    conn = sqlite3.connect(":memory:")
+    db.init_schema(conn)
+    db.run_migrations(conn)
+    return conn
+
+
+class TestPhaseCrud:
+    """Тесты CRUD этапов через repository (insert_phase, load_phases, update_phase, delete_phase)."""
+
+    def test_insert_and_load_phases(self):
+        conn = _minimal_app_conn()
+        try:
+            status_id = repository.get_status_id_by_code(conn, "in_progress")
+            assert status_id is not None
+            proj_id = repository.insert_project(
+                conn, "Тест", "", None, 50.0,
+                "2025-01-01", "2025-12-31", False, status_id,
+            )
+            repository.insert_phase(
+                conn, proj_id, "Этап 1", "Обычная работа",
+                "2025-02-01", "2025-02-28", 0,
+            )
+            phases = repository.load_phases(conn)
+            proj_phases = phases[phases["project_id"] == proj_id]
+            assert len(proj_phases) == 1
+            assert proj_phases.iloc[0]["name"] == "Этап 1"
+        finally:
+            conn.close()
+
+    def test_update_phase(self):
+        conn = _minimal_app_conn()
+        try:
+            status_id = repository.get_status_id_by_code(conn, "in_progress")
+            proj_id = repository.insert_project(
+                conn, "Проект", "", None, 50.0,
+                "2025-01-01", "2025-12-31", False, status_id,
+            )
+            repository.insert_phase(
+                conn, proj_id, "Старое", "Обычная работа",
+                "2025-02-01", "2025-02-28", 0,
+            )
+            phases = repository.load_phases(conn)
+            phase_id = int(phases[phases["project_id"] == proj_id].iloc[0]["id"])
+            repository.update_phase(
+                conn, phase_id, "Новое", "Командировка",
+                "2025-02-05", "2025-02-20", 50, None,
+            )
+            phases = repository.load_phases(conn)
+            row = phases[phases["id"] == phase_id].iloc[0]
+            assert row["name"] == "Новое"
+            assert row["phase_type"] == "Командировка"
+        finally:
+            conn.close()
+
+    def test_delete_phase(self):
+        conn = _minimal_app_conn()
+        try:
+            status_id = repository.get_status_id_by_code(conn, "in_progress")
+            proj_id = repository.insert_project(
+                conn, "Проект", "", None, 50.0,
+                "2025-01-01", "2025-12-31", False, status_id,
+            )
+            repository.insert_phase(
+                conn, proj_id, "Удаляемый", "Обычная работа",
+                "2025-02-01", "2025-02-28", 0,
+            )
+            phases = repository.load_phases(conn)
+            phase_id = int(phases[phases["project_id"] == proj_id].iloc[0]["id"])
+            repository.delete_phase(conn, phase_id)
+            phases = repository.load_phases(conn)
+            assert phases[phases["project_id"] == proj_id].empty
+        finally:
+            conn.close()
+
+
+class TestLoadCalculator:
+    """Тесты load_calculator: employee_load_by_day, employee_load_by_day_batch (пустая/минимальная БД)."""
+
+    def test_employee_load_by_day_empty_db(self):
+        import load_calculator as lc
+        conn = _minimal_app_conn()
+        try:
+            df = lc.employee_load_by_day(conn, 999, date(2025, 1, 1), date(2025, 1, 7))
+            assert "date" in df.columns and "load" in df.columns
+            assert len(df) == 7
+            assert (df["load"] == 0.0).all()
+        finally:
+            conn.close()
+
+    def test_employee_load_by_day_batch_empty_db(self):
+        import load_calculator as lc
+        conn = _minimal_app_conn()
+        try:
+            df = lc.employee_load_by_day_batch(
+                conn, [1, 2], date(2025, 1, 1), date(2025, 1, 3)
+            )
+            assert list(df.columns) == ["employee_id", "date", "load"]
+            assert len(df) == 2 * 3  # 2 employees, 3 days
+            assert (df["load"] == 0.0).all()
+        finally:
+            conn.close()
+
+    def test_employee_load_by_day_batch_empty_list(self):
+        import load_calculator as lc
+        conn = _minimal_app_conn()
+        try:
+            df = lc.employee_load_by_day_batch(conn, [], date(2025, 1, 1), date(2025, 1, 7))
+            assert df.empty
+            assert list(df.columns) == ["employee_id", "date", "load"]
+        finally:
+            conn.close()

@@ -13,6 +13,7 @@ actions_log = get_actions_logger()
 
 
 def render(conn):
+    """Отрисовка страницы «Отпуска»: периоды отпусков, добавление и редактирование. conn — подключение к БД."""
     st.header("🏖️ Отпуска сотрудников")
     df_emp = repository.load_employees(conn)
     cur = conn.cursor()

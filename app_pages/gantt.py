@@ -13,6 +13,7 @@ from utils.type_utils import safe_int
 
 
 def render(conn):
+    """Отрисовка страницы «Диаграмма Ганта»: проекты и этапы на временной шкале. conn — подключение к БД."""
     st.header("📊 Диаграмма Ганта проектов и этапов")
     df_proj = repository.load_projects(conn)
     if df_proj.empty:

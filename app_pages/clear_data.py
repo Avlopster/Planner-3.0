@@ -10,6 +10,7 @@ from utils.app_logging import get_actions_logger
 
 
 def render(conn):
+    """Отрисовка страницы «Очистить данные»: резервная копия БД и полная очистка. conn — подключение к БД."""
     st.header("⚠️ Очистка всех данных")
     col_backup, col_clear = st.columns([1, 1])
     with col_backup:
