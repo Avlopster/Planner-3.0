@@ -1,0 +1,20 @@
+[server]
+port = 8501
+headless = true
+# Для доступа с других машин (сервер): address = "0.0.0.0"
+
+[theme]
+base = "light"
+font = "sans serif"
+
+[theme.light]
+primaryColor = "#2563eb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
+textColor = "#0f172a"
+
+[theme.dark]
+primaryColor = "#3b82f6"
+backgroundColor = "#0f172a"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#f8fafc"

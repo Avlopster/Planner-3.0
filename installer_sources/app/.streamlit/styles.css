@@ -1,0 +1,28 @@
+/* Колонки меню — равная ширина */
+[data-testid="stSidebar"] [data-testid="column"] {
+    flex: 1 1 0;
+    min-width: 0;
+}
+/* Контейнер кнопки на всю ширину ячейки */
+[data-testid="stSidebar"] .stButton {
+    width: 100%;
+    min-width: 0;
+}
+[data-testid="stSidebar"] .stButton > button {
+    width: 100% !important;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+/* Основной контент — на всю ширину для широкоформатных мониторов */
+.stMainBlockContainer,
+[data-testid="stAppViewContainer"] main .block-container {
+    max-width: 100% !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+}
+
+/* Отступ между крупными секциями контента (компактнее для большего объёма на экране) */
+[data-testid="stVerticalBlock"] > div {
+    margin-bottom: 0.75rem;
+}
