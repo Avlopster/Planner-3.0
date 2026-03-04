@@ -137,26 +137,38 @@ def load_phase_assignments(conn: sqlite3.Connection) -> pd.DataFrame:
 
 def get_employee_name(conn: sqlite3.Connection, emp_id: int) -> str:
     """Возвращает имя сотрудника по id (один запрос по БД)."""
-    if emp_id is None:
+    if conn is None or emp_id is None:
         return "Не найден"
     try:
         eid = int(emp_id)
     except (TypeError, ValueError):
         return "Не найден"
-    row = conn.cursor().execute("SELECT name FROM employees WHERE id = ?", (eid,)).fetchone()
-    return row[0] if row and row[0] else "Не найден"
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM employees WHERE id = ?", (eid,))
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row and row[0] else "Не найден"
+    except (sqlite3.InterfaceError, sqlite3.ProgrammingError, sqlite3.OperationalError, sqlite3.Error, OSError, AttributeError):
+        return "Не найден"
 
 
 def get_project_name(conn: sqlite3.Connection, proj_id: int) -> str:
     """Возвращает название проекта по id (один запрос по БД)."""
-    if proj_id is None:
+    if conn is None or proj_id is None:
         return "Не найден"
     try:
         pid = int(proj_id)
     except (TypeError, ValueError):
         return "Не найден"
-    row = conn.cursor().execute("SELECT name FROM projects WHERE id = ?", (pid,)).fetchone()
-    return row[0] if row and row[0] else "Не найден"
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM projects WHERE id = ?", (pid,))
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row and row[0] else "Не найден"
+    except (sqlite3.InterfaceError, sqlite3.ProgrammingError, sqlite3.OperationalError, sqlite3.Error, OSError, AttributeError):
+        return "Не найден"
 
 
 def get_employee_vacations(conn: sqlite3.Connection, emp_id: int) -> pd.DataFrame:
