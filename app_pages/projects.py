@@ -377,6 +377,13 @@ def render(conn, db_path=None):
             df_proj = df_proj[mask]
     if not df_proj.empty:
         df_proj = df_proj.copy()
+        sort_by = st.selectbox(
+            "Сортировка",
+            ["По умолчанию", "По статусу (В работе → … → Отменён)"],
+            key="proj_sort_by",
+        )
+        if sort_by == "По статусу (В работе → … → Отменён)":
+            df_proj = repository.sort_projects_by_status(df_proj)
         df_proj['lead_name'] = df_proj['lead_id'].apply(lambda eid: repository.get_employee_name(conn, eid))
         juniors_df = repository.load_project_juniors(conn)
         phases_df = repository.load_phases(conn)

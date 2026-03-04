@@ -28,6 +28,7 @@ def render(conn):
             gantt_statuses = repository.get_gantt_active_statuses(conn)
             df_proj = df_proj[df_proj['status_name'].fillna('Не указан').isin(gantt_statuses)].copy()
         if not df_proj.empty:
+            df_proj = repository.sort_projects_by_status(df_proj)
             option_pairs = [
                 (f"{row['name']} — {row.get('status_name', 'Не указан')}", row['id'])
                 for _, row in df_proj.iterrows()
@@ -42,6 +43,7 @@ def render(conn):
             )
             selected_ids = [p[1] for p in option_pairs if p[0] in selected_labels]
             df_proj = df_proj[df_proj['id'].isin(selected_ids)].copy()
+            df_proj = repository.sort_projects_by_status(df_proj)
         if df_proj.empty:
             st.info("Нет проектов для отображения.")
         else:

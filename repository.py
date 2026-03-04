@@ -105,6 +105,24 @@ def load_projects(conn: sqlite3.Connection) -> pd.DataFrame:
     return df
 
 
+# Порядок статусов для отображения: В работе → Планируется → Завершён → Отменён
+STATUS_DISPLAY_ORDER = ('in_progress', 'planned', 'completed', 'cancelled')
+
+
+def sort_projects_by_status(df: pd.DataFrame) -> pd.DataFrame:
+    """Сортирует DataFrame проектов по статусу: В работе, Планируется, Завершён, Отменён; остальные в конце по id."""
+    if df.empty or 'status_code' not in df.columns:
+        return df
+    order_map = {code: i for i, code in enumerate(STATUS_DISPLAY_ORDER)}
+    df = df.copy()
+    df['_sort_key'] = df['status_code'].map(lambda c: order_map.get(c, 99))
+    if 'id' in df.columns:
+        df = df.sort_values(by=['_sort_key', 'id']).drop(columns=['_sort_key'])
+    else:
+        df = df.sort_values(by='_sort_key').drop(columns=['_sort_key'])
+    return df.reset_index(drop=True)
+
+
 def load_project_juniors(conn: sqlite3.Connection) -> pd.DataFrame:
     df = pd.read_sql("SELECT * FROM project_juniors", conn)
     if not df.empty:
