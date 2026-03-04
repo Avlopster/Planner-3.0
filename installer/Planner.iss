@@ -28,7 +28,7 @@ VersionInfoVersion={#MyAppVersion}
 VersionInfoProductName=Planner
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoCompany=Planner
-VersionInfoCopyright=Copyright (C) Planner
+VersionInfoCopyright=Copyright (C) ArtemVashchenko
 VersionInfoDescription=Planner Setup
 
 [Languages]
