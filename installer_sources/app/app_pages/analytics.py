@@ -21,6 +21,7 @@ def _on_analytics_export():
 
 
 def render(conn):
+    """Отрисовка страницы «Аналитика»: загрузка по отделам, перегрузки, экспорт. conn — подключение к БД."""
     page_header("📈", "Аналитика загрузки")
     df_emp = repository.load_employees(conn)
     if df_emp.empty:

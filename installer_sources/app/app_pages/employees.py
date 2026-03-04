@@ -14,6 +14,7 @@ actions_log = get_actions_logger()
 
 
 def render(conn):
+    """Отрисовка страницы «Сотрудники»: список, добавление и редактирование. conn — подключение к БД."""
     st.header("👥 Сотрудники")
     df_roles = repository.load_roles(conn)
     cur = conn.cursor()

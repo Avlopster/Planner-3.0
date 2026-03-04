@@ -19,6 +19,331 @@ logger = get_db_logger()
 actions_log = get_actions_logger()
 
 
+def _render_new_project_form(conn, df_emp_sorted: pd.DataFrame) -> None:
+    """Форма создания нового проекта: поля и кнопка «Создать проект»."""
+    col1, col2 = st.columns(2)
+    with col1:
+        if 'new_project_name' not in st.session_state:
+            st.session_state.new_project_name = ""
+        if 'new_project_client' not in st.session_state:
+            st.session_state.new_project_client = ""
+        if 'new_project_lead_id' not in st.session_state:
+            st.session_state.new_project_lead_id = df_emp_sorted['id'].tolist()[0] if not df_emp_sorted.empty else None
+        if 'new_project_lead_load' not in st.session_state:
+            st.session_state.new_project_lead_load = 50
+
+        proj_name = st.text_input("Название проекта", value=st.session_state.new_project_name, key="new_proj_name")
+        client_company = st.text_input("Компания клиента", value=st.session_state.new_project_client, key="new_proj_client")
+        lead_id = st.selectbox(
+            "Ведущий специалист", df_emp_sorted['id'].tolist(),
+            format_func=lambda x: f"{df_emp_sorted[df_emp_sorted['id']==x]['name'].values[0]} ({df_emp_sorted[df_emp_sorted['id']==x]['role_name'].values[0]})",
+            index=df_emp_sorted['id'].tolist().index(st.session_state.new_project_lead_id) if st.session_state.new_project_lead_id in df_emp_sorted['id'].tolist() else 0,
+            key="new_proj_lead"
+        )
+        lead_load = st.number_input("Загрузка ведущего (%)", min_value=1, max_value=100,
+                                   value=st.session_state.new_project_lead_load, key="new_proj_lead_load")
+        df_statuses = repository.load_project_statuses(conn)
+        default_status_id = repository.get_status_id_by_code(conn, 'in_progress')
+        status_options = df_statuses['id'].tolist() if not df_statuses.empty else []
+        status_format = lambda x: df_statuses[df_statuses['id'] == x]['name'].values[0] if not df_statuses.empty and len(df_statuses[df_statuses['id'] == x]) else str(x)
+        default_idx = status_options.index(default_status_id) if default_status_id in status_options else (1 if len(status_options) > 1 else 0)
+        proj_status_id = st.selectbox(
+            "Статус",
+            status_options,
+            format_func=status_format,
+            index=min(default_idx, len(status_options) - 1) if status_options else 0,
+            key="new_proj_status",
+        )
+    with col2:
+        if 'new_project_auto_dates' not in st.session_state:
+            st.session_state.new_project_auto_dates = True
+        auto_dates = st.checkbox("Автоопределение дат по этапам",
+                                 value=st.session_state.new_project_auto_dates, key="new_proj_auto_dates")
+        if not auto_dates:
+            st.markdown("**Дата начала проекта**")
+            if 'new_project_start' not in st.session_state:
+                st.session_state.new_project_start = date.today()
+            proj_start = ru_date_picker("", default=st.session_state.new_project_start, key_prefix="proj_start")
+            proj_start_str = proj_start.isoformat()
+            st.markdown("**Дата окончания проекта**")
+            if 'new_project_end' not in st.session_state:
+                st.session_state.new_project_end = date.today() + timedelta(days=60)
+            proj_end = ru_date_picker("", default=st.session_state.new_project_end, key_prefix="proj_end")
+            proj_end_str = proj_end.isoformat()
+        else:
+            proj_start_str, proj_end_str = repository.get_date_placeholders(conn)
+            st.info("Даты проекта будут вычислены автоматически после добавления этапов.")
+    st.markdown("**Рядовые сотрудники (можно добавить несколько)**")
+    juniors_list = []
+    if 'new_project_num_juniors' not in st.session_state:
+        st.session_state.new_project_num_juniors = 1
+    num_juniors = st.number_input("Количество рядовых", min_value=0, max_value=10,
+                                 value=st.session_state.new_project_num_juniors, step=1, key="new_proj_num_juniors")
+    for i in range(int(num_juniors)):
+        cols = st.columns(2)
+        with cols[0]:
+            junior_key = f"new_proj_junior_{i}"
+            if junior_key not in st.session_state:
+                st.session_state[junior_key] = df_emp_sorted['id'].tolist()[0] if not df_emp_sorted.empty else None
+            junior_id = st.selectbox(
+                f"Рядовой {i+1}", df_emp_sorted['id'].tolist(),
+                format_func=lambda x, i=i: f"{df_emp_sorted[df_emp_sorted['id']==x]['name'].values[0]} ({df_emp_sorted[df_emp_sorted['id']==x]['role_name'].values[0]})",
+                index=df_emp_sorted['id'].tolist().index(st.session_state[junior_key]) if st.session_state[junior_key] in df_emp_sorted['id'].tolist() else 0,
+                key=f"junior_{i}"
+            )
+        with cols[1]:
+            junior_load_key = f"new_proj_junior_load_{i}"
+            if junior_load_key not in st.session_state:
+                st.session_state[junior_load_key] = 100
+            junior_load = st.number_input(f"Загрузка {i+1} (%)", min_value=1, max_value=100,
+                                         value=st.session_state[junior_load_key], key=f"junior_load_{i}")
+        juniors_list.append((junior_id, junior_load))
+
+    if st.button("Создать проект"):
+        if not proj_name:
+            warn_msg = "Введите название проекта"
+            log_user_facing_error(logging.WARNING, warn_msg)
+            st.warning(warn_msg)
+        else:
+            proj_id = repository.insert_project(
+                conn, proj_name, client_company or "", lead_id, float(lead_load),
+                proj_start_str, proj_end_str, bool(auto_dates), int(proj_status_id),
+            )
+            if juniors_list:
+                repository.add_project_juniors(conn, proj_id, [(int(jid), float(jload)) for (jid, jload) in juniors_list])
+            actions_log.info("Создан проект '%s' (id=%s)", proj_name, proj_id)
+            st.success(f"Проект '{proj_name}' создан!")
+            st.session_state.new_project_name = ""
+            st.session_state.new_project_client = ""
+            if not df_emp_sorted.empty:
+                st.session_state.new_project_lead_id = df_emp_sorted['id'].tolist()[0]
+            st.session_state.new_project_lead_load = 50
+            st.session_state.new_project_auto_dates = True
+            st.session_state.new_project_num_juniors = 1
+            st.session_state.new_project_start = date.today()
+            st.session_state.new_project_end = date.today() + timedelta(days=60)
+            for i in range(10):
+                for key_suffix in [f"junior_{i}", f"junior_load_{i}"]:
+                    if f"new_proj_{key_suffix}" in st.session_state:
+                        del st.session_state[f"new_proj_{key_suffix}"]
+            for key in ['proj_start_day', 'proj_start_month', 'proj_start_year',
+                       'proj_end_day', 'proj_end_month', 'proj_end_year']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.cache_data.clear()
+            st.rerun()
+
+
+def _render_project_header(conn, proj, juniors_df: pd.DataFrame) -> None:
+    """Шапка карточки проекта: ведущий, рядовые, даты, кнопки редактирования и удаления."""
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        st.write(f"**Ведущий:** {proj['lead_name']} ({proj['lead_load_percent']}%)")
+        proj_jun = juniors_df[juniors_df['project_id'] == proj['id']]
+        if not proj_jun.empty:
+            st.write("**Рядовые:**")
+            for _, j in proj_jun.iterrows():
+                st.write(f"  - {repository.get_employee_name(conn, j['employee_id'])} ({j['load_percent']}%)")
+        if proj['auto_dates']:
+            st.write("**Даты проекта:** авто (на основе этапов)")
+        else:
+            start_fmt = proj['project_start'].strftime("%d.%m.%Y") if hasattr(proj.get('project_start'), 'strftime') and proj.get('project_start') else "—"
+            end_fmt = proj['project_end'].strftime("%d.%m.%Y") if hasattr(proj.get('project_end'), 'strftime') and proj.get('project_end') else "—"
+            st.write(f"**Период:** {start_fmt} — {end_fmt}")
+    with col2:
+        if st.button("✏️", key=f"edit_proj_{proj['id']}"):
+            st.session_state[f'editing_proj_{proj["id"]}'] = True
+        if st.button("🗑️", key=f"del_proj_{proj['id']}"):
+            repository.delete_project(conn, proj['id'])
+            st.cache_data.clear()
+            st.rerun()
+
+
+def _render_phases_section(
+    conn,
+    proj,
+    phases_df: pd.DataFrame,
+    phase_assignments_df: pd.DataFrame,
+    df_emp: pd.DataFrame,
+    open_phase_id,
+) -> None:
+    """Блок «Этапы проекта»: список этапов с редактированием/удалением и форма добавления этапа."""
+    st.markdown("#### 🗂️ Этапы проекта")
+    proj_phases = phases_df[phases_df['project_id'] == proj['id']]
+    if not proj_phases.empty:
+        for phase_num, (_, ph) in enumerate(proj_phases.iterrows(), start=1):
+            with st.container():
+                if open_phase_id is not None and ph['id'] == open_phase_id:
+                    st.info("Вы здесь из-за перегрузки или конфликта отпуск/проект. Измените назначения на этап при необходимости.")
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([3, 2, 2, 2, 1.5, 1, 1])
+                ph_start = ph['start_date']
+                ph_end = ph['end_date']
+                with col1:
+                    st.write(f"{phase_num}. {ph['name']}")
+                with col2:
+                    st.write(ph['phase_type'])
+                with col3:
+                    st.write(ph_start.strftime("%d.%m.%Y") if hasattr(ph_start, 'strftime') else str(ph_start))
+                with col4:
+                    st.write(ph_end.strftime("%d.%m.%Y") if hasattr(ph_end, 'strftime') else str(ph_end))
+                with col5:
+                    st.write(f"{safe_int(ph.get('completion_percent'), 0) or 0}%")
+                with col6:
+                    if st.button("✏️", key=f"edit_phase_{ph['id']}"):
+                        st.session_state[f'editing_phase_{ph['id']}'] = True
+                with col7:
+                    if st.button("❌", key=f"del_phase_{ph['id']}"):
+                        repository.delete_phase(conn, ph['id'])
+                        if proj['auto_dates']:
+                            repository.update_project_dates_from_phases(conn, proj['id'])
+                        st.cache_data.clear()
+                        st.rerun()
+
+                assigns = phase_assignments_df[phase_assignments_df['phase_id'] == ph['id']]
+                if not assigns.empty:
+                    st.markdown("   *Назначенные сотрудники:*")
+                    for _, a in assigns.iterrows():
+                        st.write(f"   - {repository.get_employee_name(conn, a['employee_id'])} ({a['load_percent']}%)")
+                else:
+                    st.markdown("   *Наследуется состав проекта*")
+
+                if st.session_state.get(f'editing_phase_{ph["id"]}', False):
+                    new_ph_name = st.text_input("Название этапа", value=ph['name'], key=f"edit_ph_name_{ph['id']}")
+                    new_ph_type = st.selectbox(
+                        "Тип", ["Обычная работа", "Командировка"],
+                        index=0 if ph['phase_type'] == 'Обычная работа' else 1,
+                        key=f"edit_ph_type_{ph['id']}"
+                    )
+                    st.markdown("**Новая дата начала**")
+                    new_ph_start = ru_date_picker("", default=ph['start_date'], key_prefix=f"edit_ph_start_{ph['id']}")
+                    new_ph_start_str = new_ph_start.isoformat()
+                    st.markdown("**Новая дата окончания**")
+                    new_ph_end = ru_date_picker("", default=ph['end_date'], key_prefix=f"edit_ph_end_{ph['id']}")
+                    new_ph_end_str = new_ph_end.isoformat()
+                    completion_options = list(range(0, 101, 5))
+                    current_completion = safe_int(ph.get('completion_percent'), 0) or 0
+                    current_completion = min(100, max(0, current_completion))
+                    if current_completion not in completion_options:
+                        current_completion = (current_completion // 5) * 5
+                    new_ph_completion = st.selectbox(
+                        "Готовность этапа, %", options=completion_options,
+                        index=completion_options.index(current_completion),
+                        key=f"edit_ph_completion_{ph['id']}"
+                    )
+                    st.markdown("**Назначения на этап (оставьте пустым для наследования)**")
+                    has_existing_assigns = not assigns.empty
+                    default_emp_ids = assigns['employee_id'].tolist() if has_existing_assigns else []
+                    default_loads = dict(zip(assigns['employee_id'], assigns['load_percent'])) if has_existing_assigns else {}
+                    use_custom_assign = st.checkbox(
+                        "Использовать индивидуальные назначения", value=has_existing_assigns,
+                        key=f"cust_assign_{ph['id']}"
+                    )
+                    assign_list = None
+                    if use_custom_assign:
+                        df_emp_sorted_phase = df_emp.sort_values('name')
+                        selected_employees = st.multiselect(
+                            "Выберите сотрудников для этапа",
+                            options=df_emp_sorted_phase['id'].tolist(),
+                            default=default_emp_ids,
+                            format_func=lambda x: f"{df_emp_sorted_phase[df_emp_sorted_phase['id']==x]['name'].values[0]} ({df_emp_sorted_phase[df_emp_sorted_phase['id']==x]['role_name'].values[0]})",
+                            key=f"multiselect_{ph['id']}"
+                        )
+                        assign_list = []
+                        for emp_id in selected_employees:
+                            emp_name = df_emp[df_emp['id'] == emp_id]['name'].values[0]
+                            default_load = safe_int(default_loads.get(emp_id, 100), 100) or 100
+                            load_pct = st.number_input(
+                                f"Загрузка для {emp_name} (%)", min_value=1, max_value=100,
+                                value=default_load, key=f"load_{ph['id']}_{emp_id}"
+                            )
+                            assign_list.append((emp_id, load_pct))
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("💾 Сохранить", key=f"save_phase_{ph['id']}"):
+                            try:
+                                repository.update_phase(
+                                    conn, ph['id'],
+                                    new_ph_name, new_ph_type, new_ph_start_str, new_ph_end_str, new_ph_completion,
+                                    assign_list if assign_list else None,
+                                )
+                                if proj['auto_dates']:
+                                    repository.update_project_dates_from_phases(conn, proj['id'])
+                                actions_log.info("Обновлён этап id=%s проекта id=%s", ph['id'], proj['id'])
+                                st.success("Этап обновлён!")
+                                st.session_state[f'editing_phase_{ph["id"]}'] = False
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                msg_save = f"Ошибка при сохранении: {e}"
+                                record_error(e, user_message=msg_save)
+                                st.error(msg_save)
+                    with col2:
+                        if st.button("Отмена", key=f"cancel_phase_{ph['id']}"):
+                            st.session_state[f'editing_phase_{ph["id"]}'] = False
+                            st.rerun()
+    else:
+        st.info("Нет этапов")
+
+    with st.form(key=f"add_phase_{proj['id']}"):
+        st.markdown("**➕ Добавить этап**")
+        col1, col2 = st.columns(2)
+        with col1:
+            phase_name_key = f"new_phase_name_{proj['id']}"
+            phase_type_key = f"new_phase_type_{proj['id']}"
+            if phase_name_key not in st.session_state:
+                st.session_state[phase_name_key] = ""
+            if phase_type_key not in st.session_state:
+                st.session_state[phase_type_key] = "Обычная работа"
+            phase_name = st.text_input("Название этапа", value=st.session_state[phase_name_key], key=f"phase_name_{proj['id']}")
+            phase_type = st.selectbox("Тип этапа", ["Обычная работа", "Командировка"],
+                                     index=0 if st.session_state[phase_type_key] == "Обычная работа" else 1,
+                                     key=f"phase_type_{proj['id']}")
+        with col2:
+            st.markdown("**Дата начала**")
+            phase_start_key = f"new_phase_start_{proj['id']}"
+            if phase_start_key not in st.session_state:
+                st.session_state[phase_start_key] = date.today()
+            phase_start = ru_date_picker("", default=st.session_state[phase_start_key], key_prefix=f"phase_start_{proj['id']}")
+            phase_start_str = phase_start.isoformat()
+            st.markdown("**Дата окончания**")
+            phase_end_key = f"new_phase_end_{proj['id']}"
+            if phase_end_key not in st.session_state:
+                st.session_state[phase_end_key] = date.today() + timedelta(days=30)
+            phase_end = ru_date_picker("", default=st.session_state[phase_end_key], key_prefix=f"phase_end_{proj['id']}")
+            phase_end_str = phase_end.isoformat()
+            st.markdown("**Готовность этапа, %**")
+            phase_completion = st.selectbox(
+                "Готовность, %", options=list(range(0, 101, 5)), index=0,
+                key=f"new_phase_completion_{proj['id']}"
+            )
+        submitted = st.form_submit_button("Добавить этап")
+        if submitted:
+            if phase_name:
+                repository.insert_phase(
+                    conn, proj['id'], phase_name, phase_type,
+                    phase_start_str, phase_end_str, phase_completion,
+                )
+                if proj['auto_dates']:
+                    repository.update_project_dates_from_phases(conn, proj['id'])
+                actions_log.info("Добавлен этап '%s' в проект id=%s", phase_name, proj['id'])
+                st.success("Этап добавлен!")
+                st.session_state[phase_name_key] = ""
+                st.session_state[phase_type_key] = "Обычная работа"
+                st.session_state[phase_start_key] = date.today()
+                st.session_state[phase_end_key] = date.today() + timedelta(days=30)
+                for key_suffix in ['day', 'month', 'year']:
+                    for prefix in [f"phase_start_{proj['id']}", f"phase_end_{proj['id']}"]:
+                        key = f"{prefix}_{key_suffix}"
+                        if key in st.session_state:
+                            del st.session_state[key]
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                warn_phase = "Введите название этапа"
+                log_user_facing_error(logging.WARNING, warn_phase)
+                st.warning(warn_phase)
+
+
 def render(conn, db_path=None):
     """Отрисовка страницы «Проекты и этапы». db_path — фактический путь к БД (для сохранения статуса на диск)."""
     effective_db_path = os.path.abspath(db_path) if db_path else os.path.abspath(app_config.DB_PATH)
@@ -29,128 +354,10 @@ def render(conn, db_path=None):
         log_user_facing_error(logging.WARNING, msg)
         st.warning(msg)
         return
-    cur = conn.cursor()
     df_emp_sorted = df_emp.sort_values('name')
 
-    # Форма создания нового проекта
     with st.expander("➕ Новый проект", expanded=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            if 'new_project_name' not in st.session_state:
-                st.session_state.new_project_name = ""
-            if 'new_project_client' not in st.session_state:
-                st.session_state.new_project_client = ""
-            if 'new_project_lead_id' not in st.session_state:
-                st.session_state.new_project_lead_id = df_emp_sorted['id'].tolist()[0] if not df_emp_sorted.empty else None
-            if 'new_project_lead_load' not in st.session_state:
-                st.session_state.new_project_lead_load = 50
-
-            proj_name = st.text_input("Название проекта", value=st.session_state.new_project_name, key="new_proj_name")
-            client_company = st.text_input("Компания клиента", value=st.session_state.new_project_client, key="new_proj_client")
-            lead_id = st.selectbox(
-                "Ведущий специалист", df_emp_sorted['id'].tolist(),
-                format_func=lambda x: f"{df_emp_sorted[df_emp_sorted['id']==x]['name'].values[0]} ({df_emp_sorted[df_emp_sorted['id']==x]['role_name'].values[0]})",
-                index=df_emp_sorted['id'].tolist().index(st.session_state.new_project_lead_id) if st.session_state.new_project_lead_id in df_emp_sorted['id'].tolist() else 0,
-                key="new_proj_lead"
-            )
-            lead_load = st.number_input("Загрузка ведущего (%)", min_value=1, max_value=100,
-                                       value=st.session_state.new_project_lead_load, key="new_proj_lead_load")
-            df_statuses = repository.load_project_statuses(conn)
-            default_status_id = repository.get_status_id_by_code(conn, 'in_progress')
-            status_options = df_statuses['id'].tolist() if not df_statuses.empty else []
-            status_format = lambda x: df_statuses[df_statuses['id'] == x]['name'].values[0] if not df_statuses.empty and len(df_statuses[df_statuses['id'] == x]) else str(x)
-            default_idx = status_options.index(default_status_id) if default_status_id in status_options else (1 if len(status_options) > 1 else 0)
-            proj_status_id = st.selectbox(
-                "Статус",
-                status_options,
-                format_func=status_format,
-                index=min(default_idx, len(status_options) - 1) if status_options else 0,
-                key="new_proj_status",
-            )
-        with col2:
-            if 'new_project_auto_dates' not in st.session_state:
-                st.session_state.new_project_auto_dates = True
-            auto_dates = st.checkbox("Автоопределение дат по этапам",
-                                     value=st.session_state.new_project_auto_dates, key="new_proj_auto_dates")
-            if not auto_dates:
-                st.markdown("**Дата начала проекта**")
-                if 'new_project_start' not in st.session_state:
-                    st.session_state.new_project_start = date.today()
-                proj_start = ru_date_picker("", default=st.session_state.new_project_start, key_prefix="proj_start")
-                proj_start_str = proj_start.isoformat()
-                st.markdown("**Дата окончания проекта**")
-                if 'new_project_end' not in st.session_state:
-                    st.session_state.new_project_end = date.today() + timedelta(days=60)
-                proj_end = ru_date_picker("", default=st.session_state.new_project_end, key_prefix="proj_end")
-                proj_end_str = proj_end.isoformat()
-            else:
-                proj_start_str, proj_end_str = repository.get_date_placeholders(conn)
-                st.info("Даты проекта будут вычислены автоматически после добавления этапов.")
-        st.markdown("**Рядовые сотрудники (можно добавить несколько)**")
-        juniors_list = []
-        if 'new_project_num_juniors' not in st.session_state:
-            st.session_state.new_project_num_juniors = 1
-        num_juniors = st.number_input("Количество рядовых", min_value=0, max_value=10,
-                                     value=st.session_state.new_project_num_juniors, step=1, key="new_proj_num_juniors")
-        for i in range(int(num_juniors)):
-            cols = st.columns(2)
-            with cols[0]:
-                junior_key = f"new_proj_junior_{i}"
-                if junior_key not in st.session_state:
-                    st.session_state[junior_key] = df_emp_sorted['id'].tolist()[0] if not df_emp_sorted.empty else None
-                junior_id = st.selectbox(
-                    f"Рядовой {i+1}", df_emp_sorted['id'].tolist(),
-                    format_func=lambda x, i=i: f"{df_emp_sorted[df_emp_sorted['id']==x]['name'].values[0]} ({df_emp_sorted[df_emp_sorted['id']==x]['role_name'].values[0]})",
-                    index=df_emp_sorted['id'].tolist().index(st.session_state[junior_key]) if st.session_state[junior_key] in df_emp_sorted['id'].tolist() else 0,
-                    key=f"junior_{i}"
-                )
-            with cols[1]:
-                junior_load_key = f"new_proj_junior_load_{i}"
-                if junior_load_key not in st.session_state:
-                    st.session_state[junior_load_key] = 100
-                junior_load = st.number_input(f"Загрузка {i+1} (%)", min_value=1, max_value=100,
-                                             value=st.session_state[junior_load_key], key=f"junior_load_{i}")
-            juniors_list.append((junior_id, junior_load))
-
-        if st.button("Создать проект"):
-            if not proj_name:
-                warn_msg = "Введите название проекта"
-                log_user_facing_error(logging.WARNING, warn_msg)
-                st.warning(warn_msg)
-            else:
-                cur.execute("""
-                    INSERT INTO projects
-                    (name, client_company, lead_id, lead_load_percent, project_start, project_end, auto_dates, status_id)
-                    VALUES (?,?,?,?,?,?,?,?)
-                """, (proj_name, client_company, lead_id, lead_load, proj_start_str, proj_end_str, auto_dates, proj_status_id))
-                proj_id = cur.lastrowid
-                for (junior_id, junior_load) in juniors_list:
-                    cur.execute("""
-                        INSERT INTO project_juniors (project_id, employee_id, load_percent)
-                        VALUES (?,?,?)
-                    """, (proj_id, junior_id, junior_load))
-                conn.commit()
-                actions_log.info("Создан проект '%s' (id=%s)", proj_name, proj_id)
-                st.success(f"Проект '{proj_name}' создан!")
-                st.session_state.new_project_name = ""
-                st.session_state.new_project_client = ""
-                if not df_emp_sorted.empty:
-                    st.session_state.new_project_lead_id = df_emp_sorted['id'].tolist()[0]
-                st.session_state.new_project_lead_load = 50
-                st.session_state.new_project_auto_dates = True
-                st.session_state.new_project_num_juniors = 1
-                st.session_state.new_project_start = date.today()
-                st.session_state.new_project_end = date.today() + timedelta(days=60)
-                for i in range(10):
-                    for key_suffix in [f"junior_{i}", f"junior_load_{i}"]:
-                        if f"new_proj_{key_suffix}" in st.session_state:
-                            del st.session_state[f"new_proj_{key_suffix}"]
-                for key in ['proj_start_day', 'proj_start_month', 'proj_start_year',
-                           'proj_end_day', 'proj_end_month', 'proj_end_year']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.cache_data.clear()
-                st.rerun()
+        _render_new_project_form(conn, df_emp_sorted)
 
     # Список проектов — всегда из БД, чтобы после обновления страницы или перезапуска приложения данные не сбрасывались
     st.subheader("Текущие проекты")
@@ -181,27 +388,7 @@ def render(conn, db_path=None):
             proj_status = proj.get('status_name', 'Не указан') or 'Не указан'
             expand_this = (open_project_id is not None and proj['id'] == open_project_id)
             with st.expander(f"📁 {proj['name']} — {proj['client_company'] if proj['client_company'] else 'Без компании'} [{proj_status}]", expanded=expand_this):
-                col1, col2 = st.columns([5, 1])
-                with col1:
-                    st.write(f"**Ведущий:** {proj['lead_name']} ({proj['lead_load_percent']}%)")
-                    proj_jun = juniors_df[juniors_df['project_id'] == proj['id']]
-                    if not proj_jun.empty:
-                        st.write("**Рядовые:**")
-                        for _, j in proj_jun.iterrows():
-                            st.write(f"  - {repository.get_employee_name(conn, j['employee_id'])} ({j['load_percent']}%)")
-                    if proj['auto_dates']:
-                        st.write("**Даты проекта:** авто (на основе этапов)")
-                    else:
-                        start_fmt = proj['project_start'].strftime("%d.%m.%Y") if hasattr(proj.get('project_start'), 'strftime') and proj.get('project_start') else "—"
-                        end_fmt = proj['project_end'].strftime("%d.%m.%Y") if hasattr(proj.get('project_end'), 'strftime') and proj.get('project_end') else "—"
-                        st.write(f"**Период:** {start_fmt} — {end_fmt}")
-                with col2:
-                    if st.button("✏️", key=f"edit_proj_{proj['id']}"):
-                        st.session_state[f'editing_proj_{proj["id"]}'] = True
-                    if st.button("🗑️", key=f"del_proj_{proj['id']}"):
-                        repository.delete_project(conn, proj['id'])
-                        st.cache_data.clear()
-                        st.rerun()
+                _render_project_header(conn, proj, juniors_df)
 
                 # Редактирование проекта: статус вынесен из формы (отдельный виджет), чтобы значение не терялось при отправке формы
                 if st.session_state.get(f'editing_proj_{proj["id"]}', False):
@@ -252,7 +439,7 @@ def render(conn, db_path=None):
                                         except sqlite3.OperationalError:
                                             pass
                                     st.session_state.pop("_db_conn", None)
-                                    # Пишем в тот же файл БД, с которым работало приложение (effective_db_path)
+                                    # Пишем в файл по пути из config и проверяем запись повторным открытием файла
                                     ok, _ = db.update_project_status_on_disk(effective_db_path, pid, sid)
                                     if not ok:
                                         msg = "Статус не сохранился в БД."
@@ -353,15 +540,12 @@ def render(conn, db_path=None):
                             st.error(msg)
                         else:
                             _status_id = int(_status_id)
-                            cur.execute("""
-                                UPDATE projects SET
-                                    name=?, client_company=?, lead_id=?, lead_load_percent=?,
-                                    project_start=?, project_end=?, auto_dates=?, status_id=?
-                                WHERE id=?
-                            """, (new_name, new_client, new_lead, new_lead_load, new_start_str, new_end_str, bool(new_auto), _status_id, pid))
-                            conn.commit()
-                            check = cur.execute("SELECT status_id FROM projects WHERE id = ?", (pid,)).fetchone()
-                            if check is not None and int(check[0]) != _status_id:
+                            repository.update_project(
+                                conn, pid, new_name, new_client or "", new_lead, float(new_lead_load),
+                                new_start_str, new_end_str, bool(new_auto), _status_id,
+                            )
+                            current_status_id = repository.get_project_status_id(conn, pid)
+                            if current_status_id is not None and current_status_id != _status_id:
                                 msg2 = "Статус не сохранился в БД. Проверьте таблицу projects и колонку status_id."
                                 log_user_facing_error(logging.ERROR, msg2)
                                 st.error(msg2)
@@ -388,196 +572,6 @@ def render(conn, db_path=None):
                             except (TypeError, ValueError):
                                 pass
 
-                # --- ЭТАПЫ ПРОЕКТА ---
-                st.markdown("#### 🗂️ Этапы проекта")
-                proj_phases = phases_df[phases_df['project_id'] == proj['id']]
-                if not proj_phases.empty:
-                    for phase_num, (_, ph) in enumerate(proj_phases.iterrows(), start=1):
-                        with st.container():
-                            if open_phase_id is not None and ph['id'] == open_phase_id:
-                                st.info("Вы здесь из-за перегрузки или конфликта отпуск/проект. Измените назначения на этап при необходимости.")
-                            col1, col2, col3, col4, col5, col6, col7 = st.columns([3, 2, 2, 2, 1.5, 1, 1])
-                            ph_start = ph['start_date']
-                            ph_end = ph['end_date']
-                            with col1:
-                                st.write(f"{phase_num}. {ph['name']}")
-                            with col2:
-                                st.write(ph['phase_type'])
-                            with col3:
-                                st.write(ph_start.strftime("%d.%m.%Y") if hasattr(ph_start, 'strftime') else str(ph_start))
-                            with col4:
-                                st.write(ph_end.strftime("%d.%m.%Y") if hasattr(ph_end, 'strftime') else str(ph_end))
-                            with col5:
-                                st.write(f"{safe_int(ph.get('completion_percent'), 0) or 0}%")
-                            with col6:
-                                if st.button("✏️", key=f"edit_phase_{ph['id']}"):
-                                    st.session_state[f'editing_phase_{ph['id']}'] = True
-                            with col7:
-                                if st.button("❌", key=f"del_phase_{ph['id']}"):
-                                    cur.execute("DELETE FROM project_phases WHERE id = ?", (ph['id'],))
-                                    conn.commit()
-                                    if proj['auto_dates']:
-                                        repository.update_project_dates_from_phases(conn, proj['id'])
-                                    st.cache_data.clear()
-                                    st.rerun()
-
-                            assigns = phase_assignments_df[phase_assignments_df['phase_id'] == ph['id']]
-                            if not assigns.empty:
-                                st.markdown("   *Назначенные сотрудники:*")
-                                for _, a in assigns.iterrows():
-                                    st.write(f"   - {repository.get_employee_name(conn, a['employee_id'])} ({a['load_percent']}%)")
-                            else:
-                                st.markdown("   *Наследуется состав проекта*")
-
-                            # Редактирование этапа
-                            if st.session_state.get(f'editing_phase_{ph["id"]}', False):
-                                new_ph_name = st.text_input("Название этапа", value=ph['name'], key=f"edit_ph_name_{ph['id']}")
-                                new_ph_type = st.selectbox(
-                                    "Тип", ["Обычная работа", "Командировка"],
-                                    index=0 if ph['phase_type'] == 'Обычная работа' else 1,
-                                    key=f"edit_ph_type_{ph['id']}"
-                                )
-                                st.markdown("**Новая дата начала**")
-                                new_ph_start = ru_date_picker("", default=ph['start_date'], key_prefix=f"edit_ph_start_{ph['id']}")
-                                new_ph_start_str = new_ph_start.isoformat()
-                                st.markdown("**Новая дата окончания**")
-                                new_ph_end = ru_date_picker("", default=ph['end_date'], key_prefix=f"edit_ph_end_{ph['id']}")
-                                new_ph_end_str = new_ph_end.isoformat()
-                                completion_options = list(range(0, 101, 5))
-                                current_completion = safe_int(ph.get('completion_percent'), 0) or 0
-                                current_completion = min(100, max(0, current_completion))
-                                if current_completion not in completion_options:
-                                    current_completion = (current_completion // 5) * 5
-                                new_ph_completion = st.selectbox(
-                                    "Готовность этапа, %", options=completion_options,
-                                    index=completion_options.index(current_completion),
-                                    key=f"edit_ph_completion_{ph['id']}"
-                                )
-
-                                st.markdown("**Назначения на этап (оставьте пустым для наследования)**")
-                                has_existing_assigns = not assigns.empty
-                                default_emp_ids = assigns['employee_id'].tolist() if has_existing_assigns else []
-                                default_loads = dict(zip(assigns['employee_id'], assigns['load_percent'])) if has_existing_assigns else {}
-                                use_custom_assign = st.checkbox(
-                                    "Использовать индивидуальные назначения", value=has_existing_assigns,
-                                    key=f"cust_assign_{ph['id']}"
-                                )
-
-                                assign_list = None
-                                if use_custom_assign:
-                                    df_emp_sorted_phase = df_emp.sort_values('name')
-                                    selected_employees = st.multiselect(
-                                        "Выберите сотрудников для этапа",
-                                        options=df_emp_sorted_phase['id'].tolist(),
-                                        default=default_emp_ids,
-                                        format_func=lambda x: f"{df_emp_sorted_phase[df_emp_sorted_phase['id']==x]['name'].values[0]} ({df_emp_sorted_phase[df_emp_sorted_phase['id']==x]['role_name'].values[0]})",
-                                        key=f"multiselect_{ph['id']}"
-                                    )
-                                    assign_list = []
-                                    for emp_id in selected_employees:
-                                        emp_name = df_emp[df_emp['id'] == emp_id]['name'].values[0]
-                                        default_load = safe_int(default_loads.get(emp_id, 100), 100) or 100
-                                        load_pct = st.number_input(
-                                            f"Загрузка для {emp_name} (%)", min_value=1, max_value=100,
-                                            value=default_load, key=f"load_{ph['id']}_{emp_id}"
-                                        )
-                                        assign_list.append((emp_id, load_pct))
-
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    if st.button("💾 Сохранить", key=f"save_phase_{ph['id']}"):
-                                        try:
-                                            cur.execute("""
-                                                UPDATE project_phases SET
-                                                    name=?, phase_type=?, start_date=?, end_date=?, completion_percent=?
-                                                WHERE id=?
-                                            """, (new_ph_name, new_ph_type, new_ph_start_str, new_ph_end_str, new_ph_completion, ph['id']))
-                                            cur.execute("DELETE FROM phase_assignments WHERE phase_id = ?", (ph['id'],))
-                                            if assign_list:
-                                                for (emp_id, load_pct) in assign_list:
-                                                    cur.execute("""
-                                                        INSERT OR IGNORE INTO phase_assignments (phase_id, employee_id, load_percent)
-                                                        VALUES (?,?,?)
-                                                    """, (ph['id'], emp_id, load_pct))
-                                            conn.commit()
-                                            if proj['auto_dates']:
-                                                repository.update_project_dates_from_phases(conn, proj['id'])
-                                            actions_log.info("Обновлён этап id=%s проекта id=%s", ph['id'], proj['id'])
-                                            st.success("Этап обновлён!")
-                                            st.session_state[f'editing_phase_{ph["id"]}'] = False
-                                            st.cache_data.clear()
-                                            st.rerun()
-                                        except Exception as e:
-                                            msg_save = f"Ошибка при сохранении: {e}"
-                                            record_error(e, user_message=msg_save)
-                                            st.error(msg_save)
-                                with col2:
-                                    if st.button("Отмена", key=f"cancel_phase_{ph['id']}"):
-                                        st.session_state[f'editing_phase_{ph["id"]}'] = False
-                                        st.rerun()
-                else:
-                    st.info("Нет этапов")
-
-                # Добавление этапа
-                with st.form(key=f"add_phase_{proj['id']}"):
-                    st.markdown("**➕ Добавить этап**")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        phase_name_key = f"new_phase_name_{proj['id']}"
-                        phase_type_key = f"new_phase_type_{proj['id']}"
-                        if phase_name_key not in st.session_state:
-                            st.session_state[phase_name_key] = ""
-                        if phase_type_key not in st.session_state:
-                            st.session_state[phase_type_key] = "Обычная работа"
-
-                        phase_name = st.text_input("Название этапа", value=st.session_state[phase_name_key], key=f"phase_name_{proj['id']}")
-                        phase_type = st.selectbox("Тип этапа", ["Обычная работа", "Командировка"],
-                                                 index=0 if st.session_state[phase_type_key] == "Обычная работа" else 1,
-                                                 key=f"phase_type_{proj['id']}")
-                    with col2:
-                        st.markdown("**Дата начала**")
-                        phase_start_key = f"new_phase_start_{proj['id']}"
-                        if phase_start_key not in st.session_state:
-                            st.session_state[phase_start_key] = date.today()
-                        phase_start = ru_date_picker("", default=st.session_state[phase_start_key], key_prefix=f"phase_start_{proj['id']}")
-                        phase_start_str = phase_start.isoformat()
-                        st.markdown("**Дата окончания**")
-                        phase_end_key = f"new_phase_end_{proj['id']}"
-                        if phase_end_key not in st.session_state:
-                            st.session_state[phase_end_key] = date.today() + timedelta(days=30)
-                        phase_end = ru_date_picker("", default=st.session_state[phase_end_key], key_prefix=f"phase_end_{proj['id']}")
-                        phase_end_str = phase_end.isoformat()
-                        st.markdown("**Готовность этапа, %**")
-                        phase_completion = st.selectbox(
-                            "Готовность, %", options=list(range(0, 101, 5)), index=0,
-                            key=f"new_phase_completion_{proj['id']}"
-                        )
-                    submitted = st.form_submit_button("Добавить этап")
-                    if submitted:
-                        if phase_name:
-                            cur.execute("""
-                                INSERT INTO project_phases (project_id, name, phase_type, start_date, end_date, completion_percent)
-                                VALUES (?,?,?,?,?,?)
-                            """, (proj['id'], phase_name, phase_type, phase_start_str, phase_end_str, phase_completion))
-                            conn.commit()
-                            if proj['auto_dates']:
-                                repository.update_project_dates_from_phases(conn, proj['id'])
-                            actions_log.info("Добавлен этап '%s' в проект id=%s", phase_name, proj['id'])
-                            st.success("Этап добавлен!")
-                            st.session_state[phase_name_key] = ""
-                            st.session_state[phase_type_key] = "Обычная работа"
-                            st.session_state[phase_start_key] = date.today()
-                            st.session_state[phase_end_key] = date.today() + timedelta(days=30)
-                            for key_suffix in ['day', 'month', 'year']:
-                                for prefix in [f"phase_start_{proj['id']}", f"phase_end_{proj['id']}"]:
-                                    key = f"{prefix}_{key_suffix}"
-                                    if key in st.session_state:
-                                        del st.session_state[key]
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            warn_phase = "Введите название этапа"
-                            log_user_facing_error(logging.WARNING, warn_phase)
-                            st.warning(warn_phase)
+                _render_phases_section(conn, proj, phases_df, phase_assignments_df, df_emp, open_phase_id)
     else:
         st.info("Нет проектов")

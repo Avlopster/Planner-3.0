@@ -15,6 +15,7 @@ from components import page_header
 
 
 def render(conn, db_path=None):
+    """Отрисовка страницы «Дашборд»: KPI по проектам, загрузка, прогноз. conn — подключение к БД."""
     page_header("🖥️", "Дашборд")
     df_projects = repository.load_projects(conn)
     df_employees = repository.load_employees(conn)
@@ -58,7 +59,7 @@ def render(conn, db_path=None):
         total_people = (1 if lead_id and pd.notna(lead_id) else 0) + len(junior_names)
         project_team_rows.append({
             'Проект': proj['name'],
-            'Статус': proj.get('status_fill', proj.get('status_name', 'Не указан')),
+            'Статус': proj.get('status_fill', proj.get('status_name', 'В работе')),
             'Ведущий': lead_name,
             'Рядовые': ", ".join(junior_names) if junior_names else "—",
             'Всего человек': total_people

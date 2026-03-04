@@ -14,7 +14,7 @@ set "SERVICE_NAME=Planner"
 set "NSSM=nssm"
 where nssm >nul 2>&1 || set "NSSM=%INSTALLDIR%\nssm\nssm.exe"
 if not exist "%NSSM%" (
-    echo NSSM not found. Install NSSM or use Task Scheduler option.
+    echo NSSM not found. Run installer\scripts\download_nssm.ps1 before building the installer.
     exit /b 1
 )
 

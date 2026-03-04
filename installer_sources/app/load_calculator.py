@@ -2,12 +2,75 @@
 """Расчёт загрузки по дням, сводки по отделу, перегрузки. Зависит от repository."""
 import sqlite3
 from datetime import date, timedelta
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import pandas as pd
 
 import config as app_config
 import repository
+from utils.date_utils import date_range_list, normalize_date
+
+
+def _to_date(x) -> Optional[date]:
+    """Приводит значение к date (для datetime/pd.Timestamp/str)."""
+    if x is None or (hasattr(x, '__iter__') and not hasattr(x, 'year')):
+        return None
+    if hasattr(x, 'date') and callable(getattr(x, 'date')):
+        return x.date()
+    if isinstance(x, date):
+        return x
+    try:
+        return pd.to_datetime(x).date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _project_bounds(proj: pd.Series, phases: pd.DataFrame) -> Tuple[Optional[date], Optional[date]]:
+    """Возвращает (start_date, end_date) проекта в виде date. Для auto_dates — по этапам, иначе из полей проекта."""
+    if proj.get('auto_dates'):
+        proj_phases = phases[phases['project_id'] == proj['id']]
+        if proj_phases.empty:
+            return (None, None)
+        start_ser = pd.to_datetime(proj_phases['start_date'], errors='coerce').dropna()
+        end_ser = pd.to_datetime(proj_phases['end_date'], errors='coerce').dropna()
+        if start_ser.empty or end_ser.empty:
+            return (None, None)
+        return (_to_date(start_ser.min()), _to_date(end_ser.max()))
+    proj_start = _to_date(proj.get('project_start'))
+    proj_end = _to_date(proj.get('project_end'))
+    return (proj_start, proj_end)
+
+
+def _find_day_phase(d_date: date, proj_id: int, phases: pd.DataFrame):
+    """Возвращает строку этапа, в который попадает d_date, или None."""
+    proj_phases = phases[phases['project_id'] == proj_id]
+    for _, ph in proj_phases.iterrows():
+        ph_start = _to_date(ph.get('start_date'))
+        ph_end = _to_date(ph.get('end_date'))
+        if ph_start is None or ph_end is None:
+            continue
+        if ph_start <= d_date <= ph_end:
+            return ph
+    return None
+
+
+def _load_for_day_from_phase(
+    day_phase,
+    phase_assignments: pd.DataFrame,
+    employee_id: int,
+    default_load: float,
+) -> float:
+    """Считает загрузку за день по этапу: из назначений, или 1.0 для командировки, или default_load."""
+    if day_phase is None:
+        return default_load
+    assigns = phase_assignments[phase_assignments['phase_id'] == day_phase['id']]
+    if not assigns.empty:
+        assigned = assigns[assigns['employee_id'] == employee_id]
+        if not assigned.empty:
+            return assigned.iloc[0]['load_percent'] / 100.0
+    if day_phase.get('phase_type') == 'Командировка':
+        return 1.0
+    return default_load
 
 
 def _annual_vacation_days_default(conn) -> int:
@@ -19,7 +82,6 @@ def _annual_vacation_days_default(conn) -> int:
         return int(float(v))
     except (ValueError, TypeError):
         return app_config.ANNUAL_VACATION_DAYS_DEFAULT
-from utils.date_utils import date_range_list, normalize_date
 
 
 def _working_days_in_range(
@@ -91,9 +153,11 @@ def employee_load_by_day(
     ignore_vacations: bool = False,
 ) -> pd.DataFrame:
     """Загрузка сотрудника по дням."""
-    start_date = pd.to_datetime(start_date)
-    end_date = pd.to_datetime(end_date)
-    dates = date_range_list(start_date.date() if hasattr(start_date, 'date') else start_date, end_date.date() if hasattr(end_date, 'date') else end_date)
+    start_d = normalize_date(start_date) or (pd.to_datetime(start_date).date() if start_date is not None else None)
+    end_d = normalize_date(end_date) or (pd.to_datetime(end_date).date() if end_date is not None else None)
+    if start_d is None or end_d is None:
+        return pd.DataFrame(columns=['date', 'load'])
+    dates = date_range_list(start_d, end_d)
     df = pd.DataFrame({'date': dates, 'load': 0.0})
 
     vacs = repository.get_employee_vacations(conn, employee_id)
@@ -105,19 +169,9 @@ def employee_load_by_day(
     phase_assignments = repository.load_phase_assignments(conn)
 
     for _, proj in projects.iterrows():
-        if proj.get('auto_dates'):
-            proj_phases = phases[phases['project_id'] == proj['id']]
-            if proj_phases.empty:
-                continue
-            start_ser = pd.to_datetime(proj_phases['start_date'], errors='coerce').dropna()
-            end_ser = pd.to_datetime(proj_phases['end_date'], errors='coerce').dropna()
-            if start_ser.empty or end_ser.empty:
-                continue
-            proj_start = start_ser.min()
-            proj_end = end_ser.max()
-        else:
-            proj_start = pd.to_datetime(proj['project_start'])
-            proj_end = pd.to_datetime(proj['project_end'])
+        proj_start_d, proj_end_d = _project_bounds(proj, phases)
+        if proj_start_d is None or proj_end_d is None:
+            continue
 
         project_workers = []
         if proj.get('lead_id') and proj['lead_id'] == employee_id:
@@ -126,50 +180,23 @@ def employee_load_by_day(
         for _, j in proj_jun.iterrows():
             if j['employee_id'] == employee_id:
                 project_workers.append(('junior', j['load_percent'] / 100.0))
-
         if not project_workers:
             continue
 
-        def _to_date(x):
-            return x.date() if hasattr(x, 'date') and callable(getattr(x, 'date')) else x
-
-        proj_start_d = _to_date(proj_start)
-        proj_end_d = _to_date(proj_end)
-        if pd.isna(proj_start_d) or pd.isna(proj_end_d):
-            continue
+        default_load = sum(l for _, l in project_workers)
 
         for i, row in df.iterrows():
-            d = row['date']
-            d_date = _to_date(d)
+            d_date = row['date']
+            if hasattr(d_date, 'date'):
+                d_date = d_date.date() if callable(getattr(d_date, 'date')) else d_date
             if d_date < proj_start_d or d_date > proj_end_d:
                 continue
             in_vacation = any(_to_date(vs) <= d_date <= _to_date(ve) for vs, ve in vacation_periods)
             if in_vacation and not ignore_vacations:
                 continue
-            day_phase = None
-            for _, ph in phases[phases['project_id'] == proj['id']].iterrows():
-                ph_start = pd.to_datetime(ph['start_date'])
-                ph_end = pd.to_datetime(ph['end_date'])
-                if pd.isna(ph_start) or pd.isna(ph_end):
-                    continue
-                if _to_date(ph_start) <= d_date <= _to_date(ph_end):
-                    day_phase = ph
-                    break
-            if day_phase is not None:
-                assigns = phase_assignments[phase_assignments['phase_id'] == day_phase['id']]
-                if not assigns.empty:
-                    assigned = assigns[assigns['employee_id'] == employee_id]
-                    if not assigned.empty:
-                        df.at[i, 'load'] += assigned.iloc[0]['load_percent'] / 100.0
-                else:
-                    if day_phase['phase_type'] == 'Командировка':
-                        df.at[i, 'load'] += 1.0
-                    else:
-                        for _, load_val in project_workers:
-                            df.at[i, 'load'] += load_val
-            else:
-                for _, load_val in project_workers:
-                    df.at[i, 'load'] += load_val
+            day_phase = _find_day_phase(d_date, proj['id'], phases)
+            add_load = _load_for_day_from_phase(day_phase, phase_assignments, employee_id, default_load)
+            df.at[i, 'load'] += add_load
     return df
 
 
@@ -183,23 +210,15 @@ def employee_load_by_day_batch(
     """Загрузка по дням для нескольких сотрудников за один проход (employee_id, date, load)."""
     if not employee_ids:
         return pd.DataFrame(columns=['employee_id', 'date', 'load'])
-    start_d = normalize_date(start_date)
-    end_d = normalize_date(end_date)
-    if start_d is None:
-        start_d = pd.to_datetime(start_date).date()
-    if end_d is None:
-        end_d = pd.to_datetime(end_date).date()
+    start_d = normalize_date(start_date) or (pd.to_datetime(start_date).date() if start_date is not None else None)
+    end_d = normalize_date(end_date) or (pd.to_datetime(end_date).date() if end_date is not None else None)
+    if start_d is None or end_d is None:
+        return pd.DataFrame(columns=['employee_id', 'date', 'load'])
     dates = date_range_list(start_d, end_d)
     emp_set = set(employee_ids)
-    # (employee_id, date) -> load
-    load_map = {}
-    for eid in emp_set:
-        for d in dates:
-            load_map[(eid, d)] = 0.0
+    load_map = {(eid, d): 0.0 for eid in emp_set for d in dates}
 
     vacs = repository.load_vacations(conn)
-    def _to_date(x):
-        return x.date() if hasattr(x, 'date') and callable(getattr(x, 'date')) else x
     vacation_by_emp = {}
     for eid in emp_set:
         ev = vacs[vacs['employee_id'] == eid]
@@ -211,22 +230,8 @@ def employee_load_by_day_batch(
     phase_assignments = repository.load_phase_assignments(conn)
 
     for _, proj in projects.iterrows():
-        if proj.get('auto_dates'):
-            proj_phases = phases[phases['project_id'] == proj['id']]
-            if proj_phases.empty:
-                continue
-            start_ser = pd.to_datetime(proj_phases['start_date'], errors='coerce').dropna()
-            end_ser = pd.to_datetime(proj_phases['end_date'], errors='coerce').dropna()
-            if start_ser.empty or end_ser.empty:
-                continue
-            proj_start = start_ser.min()
-            proj_end = end_ser.max()
-        else:
-            proj_start = pd.to_datetime(proj['project_start'])
-            proj_end = pd.to_datetime(proj['project_end'])
-        proj_start_d = _to_date(proj_start)
-        proj_end_d = _to_date(proj_end)
-        if pd.isna(proj_start_d) or pd.isna(proj_end_d):
+        proj_start_d, proj_end_d = _project_bounds(proj, phases)
+        if proj_start_d is None or proj_end_d is None:
             continue
         project_workers = []
         if proj.get('lead_id') and proj['lead_id'] in emp_set:
@@ -236,7 +241,6 @@ def employee_load_by_day_batch(
                 project_workers.append((j['employee_id'], j['load_percent'] / 100.0))
         if not project_workers:
             continue
-        proj_phases = phases[phases['project_id'] == proj['id']]
         for d in dates:
             if d < proj_start_d or d > proj_end_d:
                 continue
@@ -244,31 +248,9 @@ def employee_load_by_day_batch(
                 if not ignore_vacations and vacation_by_emp.get(emp_id):
                     if any(_to_date(vs) <= d <= _to_date(ve) for vs, ve in vacation_by_emp[emp_id]):
                         continue
-                day_phase = None
-                for _, ph in proj_phases.iterrows():
-                    ph_start = pd.to_datetime(ph['start_date'])
-                    ph_end = pd.to_datetime(ph['end_date'])
-                    if pd.isna(ph_start) or pd.isna(ph_end):
-                        continue
-                    if _to_date(ph_start) <= d <= _to_date(ph_end):
-                        day_phase = ph
-                        break
-                key = (emp_id, d)
-                if key not in load_map:
-                    load_map[key] = 0.0
-                if day_phase is not None:
-                    assigns = phase_assignments[phase_assignments['phase_id'] == day_phase['id']]
-                    if not assigns.empty:
-                        assigned = assigns[assigns['employee_id'] == emp_id]
-                        if not assigned.empty:
-                            load_map[key] += assigned.iloc[0]['load_percent'] / 100.0
-                    else:
-                        if day_phase['phase_type'] == 'Командировка':
-                            load_map[key] += 1.0
-                        else:
-                            load_map[key] += load_frac
-                else:
-                    load_map[key] += load_frac
+                day_phase = _find_day_phase(d, proj['id'], phases)
+                add_load = _load_for_day_from_phase(day_phase, phase_assignments, emp_id, load_frac)
+                load_map[(emp_id, d)] = load_map.get((emp_id, d), 0.0) + add_load
 
     rows = [{'employee_id': eid, 'date': d, 'load': load_map.get((eid, d), 0.0)} for eid in emp_set for d in dates]
     return pd.DataFrame(rows)

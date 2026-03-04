@@ -12,6 +12,7 @@ actions_log = get_actions_logger()
 
 
 def render(conn):
+    """Отрисовка страницы «Роли»: справочник ролей, добавление и редактирование. conn — подключение к БД."""
     st.header("📋 Справочник ролей")
     col1, col2 = st.columns([3, 1])
     with col1:

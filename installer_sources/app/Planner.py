@@ -1,26 +1,17 @@
+"""
+Точка входа приложения Planner: инициализация логов, БД, меню и роутинг по разделам.
+Страницы (app_pages) получают conn и вызывают repository / load_calculator / capacity напрямую.
+"""
 import os
 
 from utils.app_logging import init_app_logging
 init_app_logging()
 
 import streamlit as st
-import sqlite3
-import math
-import pandas as pd
-import plotly.express as px
-from datetime import datetime, timedelta, date
-import io
-import calendar
 
 import config as app_config
-from utils.date_utils import date_range_list
-from utils.type_utils import safe_int
-from utils.app_logging import log_user_facing_error
-import logging
 import database as db
-import repository
-import load_calculator
-import capacity as capacity_module
+from components import menu_button
 
 # Одно подключение к БД на всю сессию; фактический путь (в т.ч. fallback) хранится в session_state
 _initial_db_path = os.path.abspath(app_config.DB_PATH)
@@ -32,117 +23,6 @@ if "_db_conn" not in st.session_state:
     db.run_migrations(conn)
 conn = st.session_state["_db_conn"]
 _db_path = st.session_state.get("_db_path", _initial_db_path)
-
-
-@st.cache_data(ttl=60)
-def load_roles(db_path: str = ""):
-    """db_path в ключе кеша — при смене БД кеш инвалидируется."""
-    return repository.load_roles(conn)
-
-
-@st.cache_data(ttl=60)
-def load_employees(db_path: str = ""):
-    return repository.load_employees(conn)
-
-
-@st.cache_data(ttl=60)
-def load_vacations(db_path: str = ""):
-    return repository.load_vacations(conn)
-
-
-def get_average_vacation_days_per_employee(year=None):
-    return load_calculator.get_average_vacation_days_per_employee(conn, year)
-
-@st.cache_data(ttl=60)
-def load_projects(db_path: str = ""):
-    return repository.load_projects(conn)
-
-
-@st.cache_data(ttl=60)
-def load_project_juniors(db_path: str = ""):
-    return repository.load_project_juniors(conn)
-
-
-@st.cache_data(ttl=60)
-def load_phases(db_path: str = ""):
-    return repository.load_phases(conn)
-
-
-def gantt_project_completion_percent(project_id, display_date, phases_df):
-    return repository.gantt_project_completion_percent(project_id, display_date, phases_df)
-
-
-@st.cache_data(ttl=60)
-def load_phase_assignments(db_path: str = ""):
-    return repository.load_phase_assignments(conn)
-
-def get_employee_name(emp_id):
-    return repository.get_employee_name(conn, emp_id)
-
-def get_project_name(proj_id):
-    return repository.get_project_name(conn, proj_id)
-
-def get_employee_vacations(emp_id):
-    return repository.get_employee_vacations(conn, emp_id)
-
-def check_vacation_overlap(emp_id, start_date, end_date, exclude_vacation_id=None):
-    return repository.check_vacation_overlap(conn, emp_id, start_date, end_date, exclude_vacation_id)
-
-def employee_load_by_day(employee_id, start_date, end_date, ignore_vacations=False):
-    return load_calculator.employee_load_by_day(conn, employee_id, start_date, end_date, ignore_vacations)
-
-def get_employee_load_sources_by_day(employee_id, day_date):
-    return load_calculator.get_employee_load_sources_by_day(conn, employee_id, day_date)
-
-def get_employee_phases_on_date(employee_id, day_date):
-    return load_calculator.get_employee_phases_on_date(conn, employee_id, day_date)
-
-def get_replacement_candidates_for_phase(phase_id, exclude_employee_id, day_date, max_candidates=3, load_threshold=0.8):
-    return load_calculator.get_replacement_candidates_for_phase(conn, phase_id, exclude_employee_id, day_date, max_candidates, load_threshold)
-
-def delete_project(project_id):
-    repository.delete_project(conn, project_id)
-
-def delete_employee(employee_id):
-    success, msg = repository.delete_employee(conn, employee_id)
-    if not success and msg:
-        log_user_facing_error(logging.ERROR, msg)
-        st.error(msg)
-    return success
-
-def delete_vacation(vacation_id):
-    repository.delete_vacation(conn, vacation_id)
-
-def delete_role(role_id):
-    success, msg = repository.delete_role(conn, role_id)
-    if not success and msg:
-        log_user_facing_error(logging.ERROR, msg)
-        st.error(msg)
-    return success
-
-def update_project_dates_from_phases(project_id):
-    return repository.update_project_dates_from_phases(conn, project_id)
-
-def get_config(key, default=None):
-    return repository.get_config(conn, key, default)
-
-def set_config(key, value):
-    repository.set_config(conn, key, value)
-
-def load_capacity_config():
-    return repository.load_capacity_config(conn)
-
-def annual_project_capacity(year=None):
-    return capacity_module.annual_project_capacity(conn, year)
-
-def department_load_summary(start_date, end_date):
-    return load_calculator.department_load_summary(conn, start_date, end_date)
-
-def overload_shortfall(start_date, end_date):
-    return load_calculator.overload_shortfall(conn, start_date, end_date)
-
-
-from components import ru_date_picker, menu_button
 
 # ---------------------------
 # 4. ФИКСИРОВАННОЕ МЕНЮ

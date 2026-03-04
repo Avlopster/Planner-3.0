@@ -112,3 +112,49 @@
 
 - **Команда:** `python -m pytest tests/ -v`
 - **Результат:** 96 passed. Сводка — в [testres.md](../testres.md).
+
+---
+
+## Рефакторинг Planner 3.0 (март 2025)
+
+План: [REFACTORING_STAGES.md](REFACTORING_STAGES.md). Выполнены этапы 0–8.
+
+### Этап 1 — Безопасность sql_runner
+
+- По умолчанию выполняются только запросы на чтение (SELECT, PRAGMA). Для INSERT/UPDATE/DELETE требуется чекбокс «Разрешить изменение данных».
+- Добавлена проверка первого токена запроса (`_is_read_only_statement`); текст запроса не логируется.
+
+### Этап 2 — Слой данных: этапы и назначения
+
+- В `repository.py` добавлены: `insert_project`, `add_project_juniors`, `update_project`, `get_project_status_id`, `delete_phase`, `insert_phase`, `update_phase`.
+- Вся работа с БД по проектам/этапам/назначениям в `app_pages/projects.py` переведена на вызовы repository (прямые SQL удалены).
+
+### Этап 3 — Мутация конфига
+
+- `database.get_connection()` возвращает `(conn, actual_path)` и больше не изменяет `app_config.DB_PATH`. Фактический путь (в т.ч. fallback) хранится в `st.session_state["_db_path"]` и передаётся в `projects.render(conn, db_path=_db_path)`.
+
+### Этап 4 — Точка входа Planner.py
+
+- Удалены неиспользуемые обёртки и кеш (`load_roles`, `load_employees`, … и все делегирующие функции). Страницы вызывают `repository` и `load_calculator`/`capacity` напрямую.
+- Planner.py сведён к: инициализация логов и БД, меню, роутинг по `st.session_state.menu`.
+
+### Этап 5 — DRY в load_calculator
+
+- Выделены общие хелперы: `_to_date`, `_project_bounds`, `_find_day_phase`, `_load_for_day_from_phase`. Функции `employee_load_by_day` и `employee_load_by_day_batch` переписаны с их использованием (устранено дублирование логики дат и этапов).
+
+### Этап 6 — Поддерживаемость projects.py
+
+- Разбиение длинной страницы на подфункции: `_render_new_project_form`, `_render_project_header`, `_render_phases_section`. Функция `render()` сокращена и читается по шагам.
+
+### Этап 7 — Тесты
+
+- Тесты пересечения отпусков переведены на `repository.check_vacation_overlap` с in-memory БД (хелпер `_vacation_conn`). Добавлены классы `TestPhaseCrud` (insert/load, update, delete этапов) и `TestLoadCalculator` (employee_load_by_day и batch при пустой БД).
+
+### Этап 8 — Качество кода
+
+- Добавлен `pyproject.toml` с настройками black (line-length 120), isort (profile black), ruff (E, F, I, W). Для всех страниц app_pages добавлены docstrings у `render(conn)` (назначение страницы и параметр conn).
+
+### Тестирование
+
+- **Команда:** `python -m pytest tests/ -q`
+- **Результат:** 126 passed, 1 skipped.

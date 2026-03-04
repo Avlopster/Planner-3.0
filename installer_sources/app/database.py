@@ -38,7 +38,7 @@ def _fallback_db_path() -> str:
 def get_connection(db_path: Optional[str] = None) -> Tuple[sqlite3.Connection, str]:
     """Возвращает (подключение к SQLite, фактический путь к файлу БД).
     db_path по умолчанию из config. Путь всегда нормализуется до абсолютного.
-    Создаёт каталог для файла БД при необходимости. При ошибке «unable to open database file» (нет прав записи)
+    Создаёт каталог для файла БД при необходимости. При ошибке «unable to open database file»
     использует запасной путь в %LOCALAPPDATA%\\Planner (конфиг не изменяется).
     """
     raw = db_path or app_config.DB_PATH

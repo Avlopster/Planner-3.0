@@ -26,7 +26,7 @@ if (-not (Test-Path $batPath)) {
 
 if (-not (Test-Path $nssmPath)) {
     [System.Windows.Forms.MessageBox]::Show(
-        "NSSM is not included in this installer. Windows Service option is unavailable.`n`nTo enable service install, rebuild the installer after running: installer\scripts\download_nssm.ps1`n`nYou can use autostart via Task Scheduler (configured during setup).",
+        "NSSM is not included in this installer. Windows Service option is unavailable.`n`nTo enable service install, rebuild the installer after running: installer\scripts\download_nssm.ps1",
         'Planner - Service install',
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
@@ -51,7 +51,7 @@ try {
 }
 
 [System.Windows.Forms.MessageBox]::Show(
-    "Service install failed (exit code: $exitCode).`n`nRun Planner manually or use Task Scheduler autostart (configured at install).",
+    "Service install failed (exit code: $exitCode).`n`nRun Planner manually from the installation folder.",
     'Planner - Service install',
     [System.Windows.Forms.MessageBoxButtons]::OK,
     [System.Windows.Forms.MessageBoxIcon]::Warning
