@@ -2,7 +2,7 @@
 """Репозиторий: CRUD, загрузка данных из БД, конфиг. Все функции принимают conn."""
 import sqlite3
 from datetime import date
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import pandas as pd
 
@@ -66,6 +66,12 @@ def get_status_name(conn: sqlite3.Connection, status_id: Optional[int]) -> str:
         return 'В работе'
     row = conn.cursor().execute("SELECT name FROM project_statuses WHERE id = ?", (int(status_id),)).fetchone()
     return row[0] if row else 'В работе'
+
+
+def get_project_status_id(conn: sqlite3.Connection, project_id: int) -> Optional[int]:
+    """Возвращает текущий status_id проекта или None."""
+    row = conn.cursor().execute("SELECT status_id FROM projects WHERE id = ?", (project_id,)).fetchone()
+    return safe_int(row[0]) if row and row[0] is not None else None
 
 
 def update_project_status(conn: sqlite3.Connection, project_id: int, status_id: int) -> bool:
@@ -182,6 +188,68 @@ def check_vacation_overlap(conn: sqlite3.Connection, emp_id: int, start_date, en
     return False, None
 
 
+def insert_project(
+    conn: sqlite3.Connection,
+    name: str,
+    client_company: str,
+    lead_id: Optional[int],
+    lead_load_percent: float,
+    project_start: str,
+    project_end: str,
+    auto_dates: bool,
+    status_id: int,
+) -> int:
+    """Создаёт проект и возвращает его id (lastrowid). Делает commit."""
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO projects
+           (name, client_company, lead_id, lead_load_percent, project_start, project_end, auto_dates, status_id)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (name, client_company, lead_id, lead_load_percent, project_start, project_end, auto_dates, status_id),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def add_project_juniors(
+    conn: sqlite3.Connection,
+    project_id: int,
+    juniors: List[Tuple[int, float]],
+) -> None:
+    """Добавляет рядовых сотрудников к проекту. juniors — список (employee_id, load_percent). Делает commit."""
+    cur = conn.cursor()
+    for (employee_id, load_percent) in juniors:
+        cur.execute(
+            "INSERT INTO project_juniors (project_id, employee_id, load_percent) VALUES (?,?,?)",
+            (project_id, employee_id, load_percent),
+        )
+    conn.commit()
+
+
+def update_project(
+    conn: sqlite3.Connection,
+    project_id: int,
+    name: str,
+    client_company: str,
+    lead_id: Optional[int],
+    lead_load_percent: float,
+    project_start: str,
+    project_end: str,
+    auto_dates: bool,
+    status_id: int,
+) -> None:
+    """Обновляет запись проекта. Делает commit."""
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE projects SET
+           name=?, client_company=?, lead_id=?, lead_load_percent=?,
+           project_start=?, project_end=?, auto_dates=?, status_id=?
+           WHERE id=?""",
+        (name, client_company, lead_id, lead_load_percent, project_start, project_end, auto_dates, status_id, project_id),
+    )
+    conn.commit()
+
+
 def delete_project(conn: sqlite3.Connection, project_id: int) -> None:
     conn.cursor().execute("DELETE FROM projects WHERE id = ?", (project_id,))
     conn.commit()
@@ -225,6 +293,60 @@ def update_project_dates_from_phases(conn: sqlite3.Connection, project_id: int) 
         conn.commit()
         return True
     return False
+
+
+def delete_phase(conn: sqlite3.Connection, phase_id: int) -> None:
+    """Удаляет этап по id. Делает commit."""
+    cur = conn.cursor()
+    cur.execute("DELETE FROM project_phases WHERE id = ?", (phase_id,))
+    conn.commit()
+
+
+def insert_phase(
+    conn: sqlite3.Connection,
+    project_id: int,
+    name: str,
+    phase_type: str,
+    start_date: str,
+    end_date: str,
+    completion_percent: int,
+) -> None:
+    """Добавляет этап к проекту. Делает commit."""
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO project_phases (project_id, name, phase_type, start_date, end_date, completion_percent)
+           VALUES (?,?,?,?,?,?)""",
+        (project_id, name, phase_type, start_date, end_date, completion_percent),
+    )
+    conn.commit()
+
+
+def update_phase(
+    conn: sqlite3.Connection,
+    phase_id: int,
+    name: str,
+    phase_type: str,
+    start_date: str,
+    end_date: str,
+    completion_percent: int,
+    assignments: Optional[List[Tuple[int, float]]] = None,
+) -> None:
+    """Обновляет этап и его назначения. assignments — список (employee_id, load_percent); если None или пусто — все назначения удаляются. Делает commit."""
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE project_phases SET
+           name=?, phase_type=?, start_date=?, end_date=?, completion_percent=?
+           WHERE id=?""",
+        (name, phase_type, start_date, end_date, completion_percent, phase_id),
+    )
+    cur.execute("DELETE FROM phase_assignments WHERE phase_id = ?", (phase_id,))
+    if assignments:
+        for (employee_id, load_percent) in assignments:
+            cur.execute(
+                "INSERT OR IGNORE INTO phase_assignments (phase_id, employee_id, load_percent) VALUES (?,?,?)",
+                (phase_id, employee_id, load_percent),
+            )
+    conn.commit()
 
 
 def get_config(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:

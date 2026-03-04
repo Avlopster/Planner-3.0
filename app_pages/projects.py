@@ -20,6 +20,8 @@ actions_log = get_actions_logger()
 
 
 def render(conn, db_path=None):
+    """Отрисовка страницы «Проекты и этапы». db_path — фактический путь к БД (для сохранения статуса на диск)."""
+    effective_db_path = os.path.abspath(db_path) if db_path else os.path.abspath(app_config.DB_PATH)
     st.header("📌 Проекты и этапы")
     df_emp = repository.load_employees(conn)
     if df_emp.empty:
@@ -27,7 +29,6 @@ def render(conn, db_path=None):
         log_user_facing_error(logging.WARNING, msg)
         st.warning(msg)
         return
-    cur = conn.cursor()
     df_emp_sorted = df_emp.sort_values('name')
 
     # Форма создания нового проекта
@@ -116,18 +117,12 @@ def render(conn, db_path=None):
                 log_user_facing_error(logging.WARNING, warn_msg)
                 st.warning(warn_msg)
             else:
-                cur.execute("""
-                    INSERT INTO projects
-                    (name, client_company, lead_id, lead_load_percent, project_start, project_end, auto_dates, status_id)
-                    VALUES (?,?,?,?,?,?,?,?)
-                """, (proj_name, client_company, lead_id, lead_load, proj_start_str, proj_end_str, auto_dates, proj_status_id))
-                proj_id = cur.lastrowid
-                for (junior_id, junior_load) in juniors_list:
-                    cur.execute("""
-                        INSERT INTO project_juniors (project_id, employee_id, load_percent)
-                        VALUES (?,?,?)
-                    """, (proj_id, junior_id, junior_load))
-                conn.commit()
+                proj_id = repository.insert_project(
+                    conn, proj_name, client_company or "", lead_id, float(lead_load),
+                    proj_start_str, proj_end_str, bool(auto_dates), int(proj_status_id),
+                )
+                if juniors_list:
+                    repository.add_project_juniors(conn, proj_id, [(int(jid), float(jload)) for (jid, jload) in juniors_list])
                 actions_log.info("Создан проект '%s' (id=%s)", proj_name, proj_id)
                 st.success(f"Проект '{proj_name}' создан!")
                 st.session_state.new_project_name = ""
@@ -251,8 +246,7 @@ def render(conn, db_path=None):
                                             pass
                                     st.session_state.pop("_db_conn", None)
                                     # Пишем в файл по пути из config и проверяем запись повторным открытием файла
-                                    db_path_abs = os.path.abspath(app_config.DB_PATH)
-                                    ok, _ = db.update_project_status_on_disk(db_path_abs, pid, sid)
+                                    ok, _ = db.update_project_status_on_disk(effective_db_path, pid, sid)
                                     if not ok:
                                         msg = "Статус не сохранился в БД."
                                         log_user_facing_error(logging.ERROR, msg, context=f"project_id={pid} status_id={sid}")
@@ -352,15 +346,12 @@ def render(conn, db_path=None):
                             st.error(msg)
                         else:
                             _status_id = int(_status_id)
-                            cur.execute("""
-                                UPDATE projects SET
-                                    name=?, client_company=?, lead_id=?, lead_load_percent=?,
-                                    project_start=?, project_end=?, auto_dates=?, status_id=?
-                                WHERE id=?
-                            """, (new_name, new_client, new_lead, new_lead_load, new_start_str, new_end_str, bool(new_auto), _status_id, pid))
-                            conn.commit()
-                            check = cur.execute("SELECT status_id FROM projects WHERE id = ?", (pid,)).fetchone()
-                            if check is not None and int(check[0]) != _status_id:
+                            repository.update_project(
+                                conn, pid, new_name, new_client or "", new_lead, float(new_lead_load),
+                                new_start_str, new_end_str, bool(new_auto), _status_id,
+                            )
+                            current_status_id = repository.get_project_status_id(conn, pid)
+                            if current_status_id is not None and current_status_id != _status_id:
                                 msg2 = "Статус не сохранился в БД. Проверьте таблицу projects и колонку status_id."
                                 log_user_facing_error(logging.ERROR, msg2)
                                 st.error(msg2)
@@ -413,8 +404,7 @@ def render(conn, db_path=None):
                                     st.session_state[f'editing_phase_{ph['id']}'] = True
                             with col7:
                                 if st.button("❌", key=f"del_phase_{ph['id']}"):
-                                    cur.execute("DELETE FROM project_phases WHERE id = ?", (ph['id'],))
-                                    conn.commit()
+                                    repository.delete_phase(conn, ph['id'])
                                     if proj['auto_dates']:
                                         repository.update_project_dates_from_phases(conn, proj['id'])
                                     st.cache_data.clear()
@@ -486,19 +476,11 @@ def render(conn, db_path=None):
                                 with col1:
                                     if st.button("💾 Сохранить", key=f"save_phase_{ph['id']}"):
                                         try:
-                                            cur.execute("""
-                                                UPDATE project_phases SET
-                                                    name=?, phase_type=?, start_date=?, end_date=?, completion_percent=?
-                                                WHERE id=?
-                                            """, (new_ph_name, new_ph_type, new_ph_start_str, new_ph_end_str, new_ph_completion, ph['id']))
-                                            cur.execute("DELETE FROM phase_assignments WHERE phase_id = ?", (ph['id'],))
-                                            if assign_list:
-                                                for (emp_id, load_pct) in assign_list:
-                                                    cur.execute("""
-                                                        INSERT OR IGNORE INTO phase_assignments (phase_id, employee_id, load_percent)
-                                                        VALUES (?,?,?)
-                                                    """, (ph['id'], emp_id, load_pct))
-                                            conn.commit()
+                                            repository.update_phase(
+                                                conn, ph['id'],
+                                                new_ph_name, new_ph_type, new_ph_start_str, new_ph_end_str, new_ph_completion,
+                                                assign_list if assign_list else None,
+                                            )
                                             if proj['auto_dates']:
                                                 repository.update_project_dates_from_phases(conn, proj['id'])
                                             actions_log.info("Обновлён этап id=%s проекта id=%s", ph['id'], proj['id'])
@@ -554,11 +536,10 @@ def render(conn, db_path=None):
                     submitted = st.form_submit_button("Добавить этап")
                     if submitted:
                         if phase_name:
-                            cur.execute("""
-                                INSERT INTO project_phases (project_id, name, phase_type, start_date, end_date, completion_percent)
-                                VALUES (?,?,?,?,?,?)
-                            """, (proj['id'], phase_name, phase_type, phase_start_str, phase_end_str, phase_completion))
-                            conn.commit()
+                            repository.insert_phase(
+                                conn, proj['id'], phase_name, phase_type,
+                                phase_start_str, phase_end_str, phase_completion,
+                            )
                             if proj['auto_dates']:
                                 repository.update_project_dates_from_phases(conn, proj['id'])
                             actions_log.info("Добавлен этап '%s' в проект id=%s", phase_name, proj['id'])
