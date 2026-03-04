@@ -87,6 +87,42 @@ begin
     Log('WriteInstallLog failed: ' + Msg);
 end;
 
+function IsPlannerServiceRunning: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Service -Name Planner -EA 0; if($s -and $s.Status -eq ''Running''){exit 1}; exit 0"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 1);
+end;
+
+function StopPlannerService: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd -ArgumentList ''/c sc stop Planner'' -Verb RunAs -Wait"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if Result then
+    Sleep(1500);
+end;
+
+function PlannerServiceExistsAndStopped: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Service -Name Planner -EA 0; if($s -and $s.Status -ne ''Running''){exit 1}; exit 0"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 1);
+end;
+
+function StartPlannerService: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd -ArgumentList ''/c sc start Planner'' -Verb RunAs -Wait -WindowStyle Hidden"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if Result then
+    Sleep(1000);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -108,11 +144,12 @@ begin
     VCRedistPath := AppDir + '\redist\vc_redist.x64.exe';
     if FileExists(VCRedistPath) and not IsUpgrade then
     begin
-      WriteInstallLog('Installing Visual C++ Redistributable: ' + VCRedistPath);
-      if Exec(VCRedistPath, '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      WriteInstallLog('Installing Visual C++ Redistributable (with elevation): ' + VCRedistPath);
+      if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath ''' + VCRedistPath + ''' -ArgumentList ''/install'',''/quiet'',''/norestart'' -Verb RunAs -Wait"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
         WriteInstallLog('VC Redist finished with code: ' + IntToStr(ResultCode))
       else
         WriteInstallLog('VC Redist execution failed');
+      Sleep(1500);
     end
     else if IsUpgrade then
       WriteInstallLog('Upgrade: skipping VC Redist (already installed)')
@@ -170,42 +207,6 @@ begin
 
     WriteInstallLog('Install completed successfully.');
   end;
-end;
-
-function IsPlannerServiceRunning: Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := False;
-  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Service -Name Planner -EA 0; if($s -and $s.Status -eq ''Running''){exit 1}; exit 0"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := (ResultCode = 1);
-end;
-
-function StopPlannerService: Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd -ArgumentList ''/c sc stop Planner'' -Verb RunAs -Wait"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if Result then
-    Sleep(1500);
-end;
-
-function PlannerServiceExistsAndStopped: Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := False;
-  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Service -Name Planner -EA 0; if($s -and $s.Status -ne ''Running''){exit 1}; exit 0"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := (ResultCode = 1);
-end;
-
-function StartPlannerService: Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd -ArgumentList ''/c sc start Planner'' -Verb RunAs -Wait -WindowStyle Hidden"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if Result then
-    Sleep(1000);
 end;
 
 function InitializeSetup(): Boolean;
