@@ -22,13 +22,16 @@ import repository
 import load_calculator
 import capacity as capacity_module
 
-# Одно подключение к БД на всю сессию — чтобы после сохранения статуса «Обновить данные» и дашборд видели те же данные (тот же conn)
-_db_path = os.path.abspath(app_config.DB_PATH)
+# Одно подключение к БД на всю сессию; фактический путь (в т.ч. fallback) хранится в session_state
+_initial_db_path = os.path.abspath(app_config.DB_PATH)
 if "_db_conn" not in st.session_state:
-    st.session_state["_db_conn"] = db.get_connection(_db_path)
-    db.init_schema(st.session_state["_db_conn"])
-    db.run_migrations(st.session_state["_db_conn"])
+    conn, actual_path = db.get_connection(_initial_db_path)
+    st.session_state["_db_conn"] = conn
+    st.session_state["_db_path"] = actual_path
+    db.init_schema(conn)
+    db.run_migrations(conn)
 conn = st.session_state["_db_conn"]
+_db_path = st.session_state.get("_db_path", _initial_db_path)
 
 
 @st.cache_data(ttl=60)
@@ -177,6 +180,7 @@ with row4[1]: menu_button("Очистить данные", "⚠️")
 with row4[2]: menu_button("SQL-запросы", "🔍")
 st.sidebar.divider()
 st.sidebar.caption(f"Текущий раздел: **{st.session_state.menu}**")
+st.sidebar.caption(f"БД: `{_db_path}`")
 
 # ---------------------------
 # 6. ОТОБРАЖЕНИЕ РАЗДЕЛОВ
@@ -226,7 +230,7 @@ elif st.session_state.menu == "Календарь":
 # ---------- КОНФИГУРАЦИЯ ----------
 elif st.session_state.menu == "Конфигурация":
     from app_pages import config_page
-    config_page.render(conn)
+    config_page.render(conn, db_path=_db_path)
 
 # ---------- SQL-ЗАПРОСЫ ----------
 elif st.session_state.menu == "SQL-запросы":

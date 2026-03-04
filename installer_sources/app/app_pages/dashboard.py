@@ -22,7 +22,7 @@ def render(conn, db_path=None):
     df_phases = repository.load_phases(conn)
     if not df_projects.empty:
         df_projects = df_projects.copy()
-        df_projects['status_fill'] = df_projects['status_name'].fillna('В работе')
+        df_projects['status_fill'] = df_projects['status_name'].fillna('Не указан')
 
     if df_projects.empty:
         st.info("Нет проектов. Добавьте проекты в разделе «Проекты и этапы».")
@@ -33,15 +33,17 @@ def render(conn, db_path=None):
     planned = int(status_counts.get('Планируется', 0)) if 'Планируется' in status_counts.index else 0
     completed = int(status_counts.get('Завершён', 0)) if 'Завершён' in status_counts.index else 0
     cancelled = int(status_counts.get('Отменён', 0)) if 'Отменён' in status_counts.index else 0
+    not_set = int(status_counts.get('Не указан', 0)) if 'Не указан' in status_counts.index else 0
     total_projects = len(df_projects)
 
     with st.container():
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+        kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
         kpi1.metric("В работе", in_work)
         kpi2.metric("Планируется", planned)
         kpi3.metric("Завершён", completed)
         kpi4.metric("Отменён", cancelled)
-        kpi5.metric("Всего проектов", total_projects)
+        kpi5.metric("Не указан", not_set)
+        kpi6.metric("Всего проектов", total_projects)
     st.divider()
 
     emp_names = df_employees.set_index('id')['name'].to_dict()
@@ -56,7 +58,7 @@ def render(conn, db_path=None):
         total_people = (1 if lead_id and pd.notna(lead_id) else 0) + len(junior_names)
         project_team_rows.append({
             'Проект': proj['name'],
-            'Статус': proj.get('status_fill', proj.get('status_name', 'В работе')),
+            'Статус': proj.get('status_fill', proj.get('status_name', 'Не указан')),
             'Ведущий': lead_name,
             'Рядовые': ", ".join(junior_names) if junior_names else "—",
             'Всего человек': total_people

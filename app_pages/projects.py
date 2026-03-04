@@ -385,7 +385,7 @@ def render(conn, db_path=None):
         open_phase_id = st.session_state.get('open_phase_id')
 
         for idx, proj in df_proj.iterrows():
-            proj_status = proj.get('status_name', 'В работе') or 'В работе'
+            proj_status = proj.get('status_name', 'Не указан') or 'Не указан'
             expand_this = (open_project_id is not None and proj['id'] == open_project_id)
             with st.expander(f"📁 {proj['name']} — {proj['client_company'] if proj['client_company'] else 'Без компании'} [{proj_status}]", expanded=expand_this):
                 _render_project_header(conn, proj, juniors_df)

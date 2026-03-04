@@ -27,7 +27,8 @@ def _parse_iso_date(s: str):
         return False, None
 
 
-def render(conn):
+def render(conn, db_path=None):
+    """db_path — фактический путь к БД (для отображения)."""
     st.header("⚙️ Конфигурация")
     st.markdown("Все настройки приложения. Изменения применяются после нажатия **Сохранить** в соответствующем блоке.")
 
@@ -206,8 +207,10 @@ def render(conn):
     with st.expander("ℹ️ О системе"):
         _year = date.today().year
         v_computed = load_calculator.get_average_vacation_days_per_employee(conn, _year)
-        st.markdown("**Путь к БД:** задаётся переменной окружения `PLANNER_DB_PATH` или по умолчанию `resource_planner.db`. Текущее значение (только для справки):")
-        st.code(app_config.DB_PATH, language=None)
+        st.markdown("**Фактический путь к БД** (файл, с которым работает приложение):")
+        actual_path = db_path if db_path else app_config.DB_PATH
+        st.code(actual_path, language=None)
+        st.caption("Задаётся переменной окружения PLANNER_DB_PATH или по умолчанию resource_planner.db. При отсутствии прав записи используется запасной путь в %LOCALAPPDATA%\\Planner.")
         st.markdown("**Текущие значения конфигурации (ёмкость и отпуск):**")
         cur = repository.load_capacity_config(conn)
         st.json({

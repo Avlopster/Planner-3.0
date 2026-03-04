@@ -93,9 +93,9 @@ def load_projects(conn: sqlite3.Connection) -> pd.DataFrame:
         if 'project_end' in df.columns:
             df['project_end'] = safe_date_series(df['project_end'])
         if 'status_name' in df.columns:
-            df['status_name'] = df['status_name'].fillna('В работе')
+            df['status_name'] = df['status_name'].fillna('Не указан')
         if 'status_code' in df.columns:
-            df['status_code'] = df['status_code'].fillna('in_progress')
+            df['status_code'] = df['status_code'].fillna('')
     return df
 
 

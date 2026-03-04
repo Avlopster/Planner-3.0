@@ -204,6 +204,10 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         if 'status_id' in proj_columns and 'status' in proj_columns:
             status_rows = c.execute("SELECT id, name FROM project_statuses").fetchall()
             name_to_id = {row[1].strip().lower(): row[0] for row in status_rows}
+            # Варианты написания «Планирование» → id статуса «Планируется»
+            id_planned = next((r[0] for r in status_rows if (r[1] or '').strip() == 'Планируется'), None)
+            if id_planned is not None:
+                name_to_id['планирование'] = id_planned
             default_id = name_to_id.get('в работе', next((row[0] for row in status_rows if row[1] == 'В работе'), None))
             if default_id is None and status_rows:
                 default_id = status_rows[0][0]
@@ -213,11 +217,12 @@ def run_migrations(conn: sqlite3.Connection) -> None:
                     sid = default_id
                 else:
                     key = str(status_val).strip().lower().replace(' ', '')
-                    sid = None
-                    for nm, sid_cand in [(r[1], r[0]) for r in status_rows]:
-                        if nm.strip().lower().replace(' ', '') == key:
-                            sid = sid_cand
-                            break
+                    sid = name_to_id.get(key)
+                    if sid is None:
+                        for nm, sid_cand in [(r[1], r[0]) for r in status_rows]:
+                            if (nm or '').strip().lower().replace(' ', '') == key:
+                                sid = sid_cand
+                                break
                     if sid is None:
                         sid = default_id
                 c.execute("UPDATE projects SET status_id = ? WHERE id = ?", (sid, proj_id))

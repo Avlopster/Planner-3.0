@@ -2,7 +2,7 @@
 """Слой БД: подключение, схема, миграции."""
 import os
 import sqlite3
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 
@@ -35,26 +35,26 @@ def _fallback_db_path() -> str:
     return os.path.join(folder, "resource_planner.db")
 
 
-def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """Возвращает подключение к SQLite. db_path по умолчанию из config. Путь всегда нормализуется до абсолютного.
+def get_connection(db_path: Optional[str] = None) -> Tuple[sqlite3.Connection, str]:
+    """Возвращает (подключение к SQLite, фактический путь к файлу БД).
+    db_path по умолчанию из config. Путь всегда нормализуется до абсолютного.
     Создаёт каталог для файла БД при необходимости. При ошибке «unable to open database file» (нет прав записи)
-    использует запасной путь в %LOCALAPPDATA%\\Planner.
+    использует запасной путь в %LOCALAPPDATA%\\Planner (конфиг не изменяется).
     """
     raw = db_path or app_config.DB_PATH
     path = os.path.abspath(os.path.normpath(os.path.expanduser(raw)))
     try:
         conn = _ensure_dir_and_connect(path)
         logger.info("Подключение к БД: %s", path)
-        return conn
+        return (conn, path)
     except sqlite3.OperationalError as e:
         if "unable to open database file" not in str(e).lower():
             raise
         logger.warning("Cannot open DB at %s (%s), using fallback in user profile.", path, e)
         fallback = _fallback_db_path()
-        app_config.DB_PATH = fallback
         conn = _ensure_dir_and_connect(fallback)
         logger.info("Подключение к БД (fallback): %s", fallback)
-        return conn
+        return (conn, fallback)
 
 
 def update_project_status_on_disk(db_path: str, project_id: int, status_id: int) -> tuple[bool, str]:
@@ -204,6 +204,10 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         if 'status_id' in proj_columns and 'status' in proj_columns:
             status_rows = c.execute("SELECT id, name FROM project_statuses").fetchall()
             name_to_id = {row[1].strip().lower(): row[0] for row in status_rows}
+            # Варианты написания «Планирование» → id статуса «Планируется»
+            id_planned = next((r[0] for r in status_rows if (r[1] or '').strip() == 'Планируется'), None)
+            if id_planned is not None:
+                name_to_id['планирование'] = id_planned
             default_id = name_to_id.get('в работе', next((row[0] for row in status_rows if row[1] == 'В работе'), None))
             if default_id is None and status_rows:
                 default_id = status_rows[0][0]
@@ -213,11 +217,12 @@ def run_migrations(conn: sqlite3.Connection) -> None:
                     sid = default_id
                 else:
                     key = str(status_val).strip().lower().replace(' ', '')
-                    sid = None
-                    for nm, sid_cand in [(r[1], r[0]) for r in status_rows]:
-                        if nm.strip().lower().replace(' ', '') == key:
-                            sid = sid_cand
-                            break
+                    sid = name_to_id.get(key)
+                    if sid is None:
+                        for nm, sid_cand in [(r[1], r[0]) for r in status_rows]:
+                            if (nm or '').strip().lower().replace(' ', '') == key:
+                                sid = sid_cand
+                                break
                     if sid is None:
                         sid = default_id
                 c.execute("UPDATE projects SET status_id = ? WHERE id = ?", (sid, proj_id))

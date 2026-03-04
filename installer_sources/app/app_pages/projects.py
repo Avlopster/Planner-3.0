@@ -20,6 +20,8 @@ actions_log = get_actions_logger()
 
 
 def render(conn, db_path=None):
+    """Отрисовка страницы «Проекты и этапы». db_path — фактический путь к БД (для сохранения статуса на диск)."""
+    effective_db_path = os.path.abspath(db_path) if db_path else os.path.abspath(app_config.DB_PATH)
     st.header("📌 Проекты и этапы")
     df_emp = repository.load_employees(conn)
     if df_emp.empty:
@@ -176,7 +178,7 @@ def render(conn, db_path=None):
         open_phase_id = st.session_state.get('open_phase_id')
 
         for idx, proj in df_proj.iterrows():
-            proj_status = proj.get('status_name', 'В работе') or 'В работе'
+            proj_status = proj.get('status_name', 'Не указан') or 'Не указан'
             expand_this = (open_project_id is not None and proj['id'] == open_project_id)
             with st.expander(f"📁 {proj['name']} — {proj['client_company'] if proj['client_company'] else 'Без компании'} [{proj_status}]", expanded=expand_this):
                 col1, col2 = st.columns([5, 1])
@@ -250,9 +252,8 @@ def render(conn, db_path=None):
                                         except sqlite3.OperationalError:
                                             pass
                                     st.session_state.pop("_db_conn", None)
-                                    # Пишем в файл по пути из config и проверяем запись повторным открытием файла
-                                    db_path_abs = os.path.abspath(app_config.DB_PATH)
-                                    ok, _ = db.update_project_status_on_disk(db_path_abs, pid, sid)
+                                    # Пишем в тот же файл БД, с которым работало приложение (effective_db_path)
+                                    ok, _ = db.update_project_status_on_disk(effective_db_path, pid, sid)
                                     if not ok:
                                         msg = "Статус не сохранился в БД."
                                         log_user_facing_error(logging.ERROR, msg, context=f"project_id={pid} status_id={sid}")

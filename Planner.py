@@ -60,6 +60,7 @@ with row4[1]: menu_button("Очистить данные", "⚠️")
 with row4[2]: menu_button("SQL-запросы", "🔍")
 st.sidebar.divider()
 st.sidebar.caption(f"Текущий раздел: **{st.session_state.menu}**")
+st.sidebar.caption(f"БД: `{_db_path}`")
 
 # ---------------------------
 # 6. ОТОБРАЖЕНИЕ РАЗДЕЛОВ
@@ -109,7 +110,7 @@ elif st.session_state.menu == "Календарь":
 # ---------- КОНФИГУРАЦИЯ ----------
 elif st.session_state.menu == "Конфигурация":
     from app_pages import config_page
-    config_page.render(conn)
+    config_page.render(conn, db_path=_db_path)
 
 # ---------- SQL-ЗАПРОСЫ ----------
 elif st.session_state.menu == "SQL-запросы":

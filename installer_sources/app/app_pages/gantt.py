@@ -25,10 +25,10 @@ def render(conn):
         )
         if only_active:
             gantt_statuses = repository.get_gantt_active_statuses(conn)
-            df_proj = df_proj[df_proj['status_name'].fillna('В работе').isin(gantt_statuses)].copy()
+            df_proj = df_proj[df_proj['status_name'].fillna('Не указан').isin(gantt_statuses)].copy()
         if not df_proj.empty:
             option_pairs = [
-                (f"{row['name']} — {row.get('status_name', 'В работе')}", row['id'])
+                (f"{row['name']} — {row.get('status_name', 'Не указан')}", row['id'])
                 for _, row in df_proj.iterrows()
             ]
             gantt_options = [p[0] for p in option_pairs]
@@ -105,7 +105,7 @@ def render(conn):
                         continue
                 proj_start_dt = pd.to_datetime(proj_start)
                 proj_end_dt = pd.to_datetime(proj_end)
-                proj_status = (proj.get('status_name') or 'В работе').strip() or 'В работе'
+                proj_status = (proj.get('status_name') or 'Не указан').strip() or 'Не указан'
                 tasks.append(dict(
                     Задача=f"📁 {proj['name']}",
                     Начало=proj_start_dt,
