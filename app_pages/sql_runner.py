@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Страница «SQL-запросы»: ввод запросов к SQLite и табличный вывод результатов."""
+"""Страница «SQL-запросы»: ввод запросов к SQLite и табличный вывод результатов.
+
+По умолчанию разрешены только запросы на чтение (SELECT, PRAGMA и т.п.).
+Для INSERT/UPDATE/DELETE требуется явное подтверждение пользователя.
+Текст запроса не логируется (возможны чувствительные данные).
+"""
 import logging
+import re
 import sqlite3
 
 import pandas as pd
@@ -8,6 +14,9 @@ import streamlit as st
 
 import config as app_config
 from utils.app_logging import log_user_facing_error, record_error
+
+# Ключевые слова запросов на запись (проверяется первый токен после комментариев/пробелов)
+_WRITE_KEYWORDS = frozenset({"insert", "update", "delete", "replace", "create", "drop", "alter"})
 
 
 def _first_statement(text: str) -> str:
@@ -17,6 +26,20 @@ def _first_statement(text: str) -> str:
     parts = text.strip().split(";")
     first = parts[0].strip()
     return first if first else ""
+
+
+def _is_read_only_statement(statement: str) -> bool:
+    """Определяет, является ли оператор только чтением (SELECT, PRAGMA, с комментариями)."""
+    if not statement or not statement.strip():
+        return True
+    # Убираем однострочные и многстрочные комментарии, берём первый токен
+    s = re.sub(r"--[^\n]*", "", statement)
+    s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+    s = s.strip().lower()
+    if not s:
+        return True
+    first_token = s.split()[0] if s.split() else ""
+    return first_token not in _WRITE_KEYWORDS
 
 
 def render(conn):
@@ -44,12 +67,26 @@ def render(conn):
         key="sql_runner_query",
     )
 
+    allow_write = st.checkbox(
+        "Разрешить изменение данных (INSERT, UPDATE, DELETE и т.д.)",
+        value=False,
+        key="sql_runner_allow_write",
+        help="Без этой отметки выполняются только запросы на чтение (SELECT, PRAGMA).",
+    )
+
     if st.button("Выполнить", key="sql_runner_run"):
         statement = _first_statement(sql)
         if not statement:
             msg = "Введите непустой SQL-запрос."
             log_user_facing_error(logging.WARNING, msg)
             st.error(msg)
+            return
+
+        if not _is_read_only_statement(statement) and not allow_write:
+            st.error(
+                "Этот запрос изменяет данные. Включите «Разрешить изменение данных» и повторите выполнение."
+            )
+            log_user_facing_error(logging.WARNING, "SQL runner: запрос на запись отклонён (подтверждение не дано).")
             return
 
         try:
