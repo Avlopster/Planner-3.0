@@ -112,3 +112,33 @@
 
 - **Команда:** `python -m pytest tests/ -v`
 - **Результат:** 96 passed. Сводка — в [testres.md](../testres.md).
+
+---
+
+## Рефакторинг Planner 3.0 (март 2025)
+
+План: [REFACTORING_STAGES.md](REFACTORING_STAGES.md). Выполнены этапы 0–4.
+
+### Этап 1 — Безопасность sql_runner
+
+- По умолчанию выполняются только запросы на чтение (SELECT, PRAGMA). Для INSERT/UPDATE/DELETE требуется чекбокс «Разрешить изменение данных».
+- Добавлена проверка первого токена запроса (`_is_read_only_statement`); текст запроса не логируется.
+
+### Этап 2 — Слой данных: этапы и назначения
+
+- В `repository.py` добавлены: `insert_project`, `add_project_juniors`, `update_project`, `get_project_status_id`, `delete_phase`, `insert_phase`, `update_phase`.
+- Вся работа с БД по проектам/этапам/назначениям в `app_pages/projects.py` переведена на вызовы repository (прямые SQL удалены).
+
+### Этап 3 — Мутация конфига
+
+- `database.get_connection()` возвращает `(conn, actual_path)` и больше не изменяет `app_config.DB_PATH`. Фактический путь (в т.ч. fallback) хранится в `st.session_state["_db_path"]` и передаётся в `projects.render(conn, db_path=_db_path)`.
+
+### Этап 4 — Точка входа Planner.py
+
+- Удалены неиспользуемые обёртки и кеш (`load_roles`, `load_employees`, … и все делегирующие функции). Страницы вызывают `repository` и `load_calculator`/`capacity` напрямую.
+- Planner.py сведён к: инициализация логов и БД, меню, роутинг по `st.session_state.menu`.
+
+### Тестирование
+
+- **Команда:** `python -m pytest tests/ -q`
+- **Результат:** 120 passed, 1 skipped.
