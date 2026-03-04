@@ -2,7 +2,7 @@
 """Слой БД: подключение, схема, миграции."""
 import os
 import sqlite3
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 
@@ -35,26 +35,26 @@ def _fallback_db_path() -> str:
     return os.path.join(folder, "resource_planner.db")
 
 
-def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """Возвращает подключение к SQLite. db_path по умолчанию из config. Путь всегда нормализуется до абсолютного.
-    Создаёт каталог для файла БД при необходимости. При ошибке «unable to open database file» (нет прав записи)
-    использует запасной путь в %LOCALAPPDATA%\\Planner.
+def get_connection(db_path: Optional[str] = None) -> Tuple[sqlite3.Connection, str]:
+    """Возвращает (подключение к SQLite, фактический путь к файлу БД).
+    db_path по умолчанию из config. Путь всегда нормализуется до абсолютного.
+    Создаёт каталог для файла БД при необходимости. При ошибке «unable to open database file»
+    использует запасной путь в %LOCALAPPDATA%\\Planner (конфиг не изменяется).
     """
     raw = db_path or app_config.DB_PATH
     path = os.path.abspath(os.path.normpath(os.path.expanduser(raw)))
     try:
         conn = _ensure_dir_and_connect(path)
         logger.info("Подключение к БД: %s", path)
-        return conn
+        return (conn, path)
     except sqlite3.OperationalError as e:
         if "unable to open database file" not in str(e).lower():
             raise
         logger.warning("Cannot open DB at %s (%s), using fallback in user profile.", path, e)
         fallback = _fallback_db_path()
-        app_config.DB_PATH = fallback
         conn = _ensure_dir_and_connect(fallback)
         logger.info("Подключение к БД (fallback): %s", fallback)
-        return conn
+        return (conn, fallback)
 
 
 def update_project_status_on_disk(db_path: str, project_id: int, status_id: int) -> tuple[bool, str]:
