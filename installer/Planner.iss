@@ -55,7 +55,7 @@ Source: "{#SourceDir}\nssm\nssm.exe"; DestDir: "{app}\nssm"; Flags: ignoreversio
 #endif
 
 [Run]
-; setup_venv.bat and create_desktop_url/register_task are run from [Code] for logging and -LogPath
+; setup_venv.bat and create_desktop_url are run from [Code] for logging and -LogPath (Task Scheduler removed; autostart only via Windows service)
 ; Install as Windows Service (prompts UAC; requires NSSM). Hidden on upgrade (service already configured).
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""Start-Process -FilePath '{app}\scripts\install_service.bat' -ArgumentList '{app}' -Verb RunAs -Wait"""; Description: "Install as Windows Service (requires administrator)"; StatusMsg: "Installing service..."; Flags: postinstall; Check: not IsUpgrade
 ; Start Service Now: starts Windows service (no CMD window). Only shown when service exists and is stopped.
