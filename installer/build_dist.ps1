@@ -16,10 +16,13 @@ $ExcludeDirs = @(
     "__pycache__",
     ".pytest_cache",
     ".git",
+    ".venv",
     "tests",
     ".cursor",
+    "logs",
     "installer",
-    "installer_sources"
+    "installer_sources",
+    "resource_planner.db"
 )
 
 if (-not (Test-Path (Join-Path $AppSrc "Planner.py"))) {

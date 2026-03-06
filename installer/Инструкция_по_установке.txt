@@ -61,6 +61,9 @@
 установщик и приложение, и что порт 8501 не занят другим ПО.
 
 При обращении в поддержку можно приложить последний файл лога установки или
-удаления из папки: %LOCALAPPDATA%\Planner\Logs (файлы install_*.log, uninstall_*.log).
+удаления из папки: %APPDATA%\Planner\Logs (файлы install_*.log, uninstall_*.log).
+
+Логи работы приложения (planner_db.log, planner_actions.log, planner_errors.log) находятся в папке:
+%LOCALAPPDATA%\Planner\Logs
 
 ================================================================================

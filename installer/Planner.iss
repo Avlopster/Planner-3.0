@@ -53,6 +53,13 @@ Source: "{#SourceDir}\redist\vc_redist.x64.exe"; DestDir: "{app}\redist"; Flags:
 #ifexist "..\installer_sources\nssm\nssm.exe"
 Source: "{#SourceDir}\nssm\nssm.exe"; DestDir: "{app}\nssm"; Flags: ignoreversion
 #endif
+; Optional: offline pip cache for install without internet (run installer\scripts\download_pip_packages.ps1)
+#ifexist "..\installer_sources\pip_offline\get-pip.py"
+Source: "{#SourceDir}\pip_offline\get-pip.py"; DestDir: "{app}"; Flags: ignoreversion
+#endif
+#ifexist "..\installer_sources\pip_offline\wheels"
+Source: "{#SourceDir}\pip_offline\wheels\*"; DestDir: "{app}\pip_offline\wheels"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Run]
 ; setup_venv.bat and create_desktop_url are run from [Code] for logging and -LogPath (Task Scheduler removed; autostart only via Windows service)
@@ -123,10 +130,20 @@ begin
     Sleep(1000);
 end;
 
+function HasInternetAccess: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -Uri ''https://pypi.org'' -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop; exit 0 } catch { exit 1 }"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  VCRedistPath, AppDir, ScriptsDir, DesktopPath: String;
+  VCRedistPath, AppDir, ScriptsDir, DesktopPath, SetupVenvLogPath: String;
+  SetupVenvOutput: AnsiString;
 begin
   if CurStep = ssInstall then
     if IsUpgrade then
@@ -156,29 +173,43 @@ begin
     else
       WriteInstallLog('VC Redist not present, skipping');
 
-    { venv: full setup on fresh install, pip-only update on upgrade }
+    { venv: full setup on fresh install; on upgrade only update packages if internet is available }
     if IsUpgrade and DirExists(AppDir + '\venv') then
     begin
-      WriteInstallLog('Upgrade: updating pip packages (setup_venv.bat update)...');
-      if not Exec(AppDir + '\setup_venv.bat', 'update', AppDir, SW_SHOW, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      if HasInternetAccess then
       begin
-        WriteInstallLog('setup_venv.bat update failed with code: ' + IntToStr(ResultCode));
-        MsgBox('Обновление зависимостей Python завершилось с ошибкой (код ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
-          'Запустите вручную из папки установки: setup_venv.bat update', mbError, MB_OK);
-        Abort;
-      end;
-      WriteInstallLog('setup_venv.bat update finished with code: ' + IntToStr(ResultCode));
+        WriteInstallLog('Upgrade: internet detected, checking for latest package versions (setup_venv.bat update)...');
+        SetupVenvLogPath := ExtractFilePath(InstallLogPath) + 'setup_venv_update.log';
+        if not Exec('cmd.exe', '/c setup_venv.bat update > "' + SetupVenvLogPath + '" 2>&1', AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+        begin
+          WriteInstallLog('setup_venv.bat update failed with code: ' + IntToStr(ResultCode));
+          if FileExists(SetupVenvLogPath) and LoadStringFromFile(SetupVenvLogPath, SetupVenvOutput) then
+            SaveStringToFile(InstallLogPath, #13#10 + '--- setup_venv.bat update output ---' + #13#10 + SetupVenvOutput + #13#10, True);
+          MsgBox('Обновление зависимостей Python завершилось с ошибкой (код ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+            'Подробности — в журнале установки. Запустите вручную из папки установки: setup_venv.bat update', mbError, MB_OK);
+          Abort;
+        end;
+        WriteInstallLog('setup_venv.bat update finished with code: ' + IntToStr(ResultCode));
+      end
+      else
+        WriteInstallLog('Upgrade: no internet access — skipping package update (using existing venv versions).');
     end
     else
     begin
       WriteInstallLog('Running setup_venv.bat to create virtual environment...');
-      if not Exec(AppDir + '\setup_venv.bat', '', AppDir, SW_SHOW, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      SetupVenvLogPath := ExtractFilePath(InstallLogPath) + 'setup_venv.log';
+      if not Exec('cmd.exe', '/c setup_venv.bat > "' + SetupVenvLogPath + '" 2>&1', AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
       begin
         WriteInstallLog('setup_venv.bat failed with code: ' + IntToStr(ResultCode));
+        if FileExists(SetupVenvLogPath) and LoadStringFromFile(SetupVenvLogPath, SetupVenvOutput) then
+        begin
+          SaveStringToFile(InstallLogPath, #13#10 + '--- setup_venv.bat output ---' + #13#10 + SetupVenvOutput + #13#10, True);
+          WriteInstallLog('See also: ' + SetupVenvLogPath);
+        end;
         MsgBox('Создание виртуального окружения Python завершилось с ошибкой (код ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+          'Подробный вывод команды сохранён в журнале установки и в файле setup_venv.log (папка Logs в %APPDATA%\Planner или в папке установки).' + #13#10 + #13#10 +
           'Проверьте интернет и запустите вручную из папки установки: setup_venv.bat' + #13#10 + #13#10 +
-          'Если при запуске Python появляется ошибка 0xC00004BC, на целевом ПК нужно установить Microsoft Visual C++ 2015-2022 Redistributable (x64):' + #13#10 +
-          'https://aka.ms/vs/17/release/vc_redist.x64.exe', mbError, MB_OK);
+          'Если в логе есть ошибка 0xC00004BC, установите Visual C++ Redistributable от имени администратора: redist\vc_redist.x64.exe. Если файла нет — https://aka.ms/vs/17/release/vc_redist.x64.exe', mbError, MB_OK);
         Abort;
       end;
       WriteInstallLog('setup_venv.bat finished with code: ' + IntToStr(ResultCode));
@@ -203,6 +234,22 @@ begin
         WriteInstallLog('Planner service started successfully')
       else
         WriteInstallLog('Failed to start Planner service (user may need to start manually)');
+    end;
+
+    { Remove offline pip cache after use (get-pip.py and pip_offline\wheels) — used only during install/update }
+    if FileExists(AppDir + '\get-pip.py') then
+    begin
+      if DeleteFile(AppDir + '\get-pip.py') then
+        WriteInstallLog('Removed get-pip.py (offline cache no longer needed).')
+      else
+        WriteInstallLog('Could not remove get-pip.py (non-fatal).');
+    end;
+    if DirExists(AppDir + '\pip_offline') then
+    begin
+      if DelTree(AppDir + '\pip_offline', True, True, True) then
+        WriteInstallLog('Removed pip_offline folder (offline wheels no longer needed).')
+      else
+        WriteInstallLog('Could not remove pip_offline folder (non-fatal).');
     end;
 
     WriteInstallLog('Install completed successfully.');

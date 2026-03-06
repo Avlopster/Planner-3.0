@@ -1,11 +1,13 @@
 # Сборка установщика Planner для Windows
 
-Каталог для сборки установщика Inno Setup: скрипты, источники и артефакты. Текущая версия установщика задаётся в `Planner.iss` константой `#define MyAppVersion "…"` (например `"2.1.2"`; при новом релизе изменить на 2.2.0, 2.1.1 и т.д.).
+**Основной установщик приложения Planner 3.0.** Все команды ниже выполняйте из корня каталога **Planner 3.0** (не из корня репозитория).
+
+Каталог для сборки установщика Inno Setup: скрипты, источники и артефакты. Текущая версия задаётся в `Planner.iss` константой `#define MyAppVersion "…"` (например `"3.0.1"`; при новом релизе изменить).
 
 ## Структура
 
 - **scripts/** — скрипты установки, регистрации службы Windows и деинсталляции (.bat, .ps1).
-- **installer_sources/** — создаётся скриптом сборки; содержит `app/`, `config_default/` (config.toml для первой установки), `python/`, скрипты в корне и в `scripts/` для Inno Setup.
+- **installer_sources/** — создаётся скриптом сборки; содержит `app/`, `config_default/` (config.toml для первой установки), `python/`, при необходимости `pip_offline/` (get-pip.py и wheels для установки без интернета), скрипты в корне и в `scripts/` для Inno Setup.
 
 ## Зависимости на целевом ПК (ошибка 0xC00004BC)
 
@@ -16,17 +18,19 @@
 ## Python Embedded и venv
 
 1. **Скачать Python Embedded:** выполнить `scripts\download_python_embedded.ps1`. По умолчанию загружается Python 3.12.x (amd64) и распаковывается в `installer_sources\python\`. Параметры: `-Version`, `-Arch`, `-OutputDir`.
-2. **Создание venv и установка зависимостей** выполняются при установке: Inno Setup после копирования файлов запускает `setup_venv.bat` с рабочей папкой `{app}`. При первой установке скрипт через get-pip и virtualenv создаёт `venv` и выполняет `pip install -r app\requirements.txt`. При обновлении — только `setup_venv.bat update` (pip install --upgrade).
-3. **Запуск приложения** (`start_planner.bat`): в начале скрипта в PATH подставляется только каталог venv (`venv\Scripts`, `venv\Library\bin`), задаётся `VIRTUAL_ENV`, затем вызывается `venv\Scripts\python.exe`. Так на ПК с уже установленным системным Python (например, C:\Python312) используется окружение установки, а не системное, и не возникает ошибки «No module named streamlit».
+2. **Офлайн-установка (рекомендуется):** выполнить `scripts\download_pip_packages.ps1`. Скачиваются get-pip.py и все зависимости из `requirements.txt` (включая virtualenv) в `installer_sources\pip_offline\`. Установщик включит их в пакет — установка на ПК без интернета будет выполняться из кэша (стабильные версии на момент сборки).
+3. **Создание venv и установка зависимостей** выполняются при установке: Inno Setup после копирования файлов запускает `setup_venv.bat` с рабочей папкой `{app}`. При первой установке: если есть `pip_offline\` (get-pip.py и wheels), venv и пакеты ставятся без интернета; иначе — через интернет. При обновлении пакеты обновляются **только при наличии интернета**; без интернета шаг обновления пакетов пропускается.
+4. **Запуск приложения** (`start_planner.bat`): в начале скрипта в PATH подставляется только каталог venv (`venv\Scripts`, `venv\Library\bin`), задаётся `VIRTUAL_ENV`, затем вызывается `venv\Scripts\python.exe`. Так на ПК с уже установленным системным Python (например, C:\Python312) используется окружение установки, а не системное, и не возникает ошибки «No module named streamlit».
 
 ## Сборка дистрибутива
 
 Перед компиляцией Inno Setup выполнить:
 1. `.\installer\scripts\download_python_embedded.ps1` — загрузить Python Embedded в `installer_sources\python\`.
-2. (Опционально) `.\installer\scripts\download_vc_redist.ps1` — загрузить VC Redist в `installer_sources\redist\`, чтобы установщик ставил его на целевой ПК и не было ошибки 0xC00004BC.
-3. **Обязательно** `.\installer\scripts\download_nssm.ps1` — загрузить NSSM в `installer_sources\nssm\`. Без NSSM установщик не сможет зарегистрировать Planner как службу Windows (единственный способ автозапуска).
-4. `.\installer\build_dist.ps1` — скопировать приложение в `installer_sources\app\` (без `__pycache__`, `.pytest_cache`, `.git`, `tests`, `.cursor`) и скрипты в `installer_sources\` и `installer_sources\scripts\`.
-5. Собрать установщик:
+2. **Рекомендуется** `.\installer\scripts\download_pip_packages.ps1` — загрузить get-pip.py и все pip-пакеты в `installer_sources\pip_offline\` для установки без интернета (на целевом ПК). Требуется установленный Python 3.10+ на машине сборки (например `py -3.12`).
+3. (Опционально) `.\installer\scripts\download_vc_redist.ps1` — загрузить VC Redist в `installer_sources\redist\`, чтобы установщик ставил его на целевой ПК и не было ошибки 0xC00004BC.
+4. **Обязательно** `.\installer\scripts\download_nssm.ps1` — загрузить NSSM в `installer_sources\nssm\`. Без NSSM установщик не сможет зарегистрировать Planner как службу Windows (единственный способ автозапуска).
+5. `.\installer\build_dist.ps1` — скопировать приложение в `installer_sources\app\` (без `__pycache__`, `.pytest_cache`, `.git`, `tests`, `.cursor`) и скрипты в `installer_sources\` и `installer_sources\scripts\`.
+6. Собрать установщик:
    - **Вариант A:** установить [Inno Setup 6](https://jrsoftware.org/isinfo.php) (или `winget install JRSoftware.InnoSetup`), затем выполнить `.\installer\build_installer.ps1` — скрипт найдёт ISCC и создаст `installer\output\PlannerSetup.exe`.
    - **Вариант B:** открыть `installer\Planner.iss` в Inno Setup и нажать «Build» → «Compile». Готовый установщик — в `installer\output\PlannerSetup.exe`.
 
@@ -50,7 +54,7 @@
 - **Конфигурация Streamlit** (`app\.streamlit\config.toml`) — **не перезаписывается**; сохраняются пользовательские настройки (порт, `address = "0.0.0.0"` для доступа по сети, тема).
 - **БД и данные** (`data\resource_planner.db`) — не затрагиваются (каталог `data` не входит в пакет установщика).
 - **VC Redist** — не устанавливается повторно (считается уже установленным).
-- **venv** — не пересоздаётся; выполняется только `pip install -r requirements.txt --upgrade` для обновления пакетов и установки новых зависимостей.
+- **venv** — не пересоздаётся. Обновление пакетов (`pip install -r requirements.txt --upgrade`) выполняется **только при наличии интернета** (установщик проверяет доступ к pypi.org). Без интернета шаг обновления пропускается, используются уже установленные версии.
 - **Опция «Установить как службу Windows»** — скрыта при обновлении (служба уже настроена).
 - **Ярлык на рабочем столе** — обновляется (идемпотентно).
 
@@ -58,12 +62,12 @@
 
 ## Журнал установки
 
-Установщик и деинсталлятор записывают действия в каталог **`Logs`** в папке установки приложения (например, `C:\Program Files\Planner\Logs`). Файлы логов удаляются вместе с приложением при деинсталляции; до удаления их можно использовать для диагностики.
+Установщик и деинсталлятор записывают действия в каталог **`%APPDATA%\Planner\Logs`** (например, `C:\Users\Имя\AppData\Roaming\Planner\Logs`). Файлы логов можно использовать для диагностики.
 
-- **Установка:** `install_YYYY-MM-DD_HH-MM-SS.log` — старт, копирование файлов, установка VC Redist, создание venv, ярлык на рабочем столе, код завершения каждого шага.
+- **Установка:** `install_YYYY-MM-DD_HH-MM-SS.log` — старт, копирование файлов, установка VC Redist (с повышением прав), создание venv, ярлык, код завершения каждого шага. При ошибке создания venv в тот же каталог сохраняется **setup_venv.log**, а его содержимое дописывается в основной лог установки.
 - **Удаление:** `uninstall_YYYY-MM-DD_HH-MM-SS.log` — старт и завершение удаления.
 
-При обращении в поддержку приложите последний файл `install_*.log` (и при необходимости `uninstall_*.log`) из папки `Logs` в каталоге установки Planner.
+При обращении в поддержку приложите последний файл `install_*.log` (и при необходимости `uninstall_*.log`, при ошибке venv — `setup_venv.log`) из папки `%APPDATA%\Planner\Logs`.
 
 **Логи работы приложения:** помимо журналов установки/удаления, само приложение при работе пишет три лог-файла — **planner_db.log**, **planner_actions.log**, **planner_errors.log**. Они создаются в каталоге `%LOCALAPPDATA%\Planner\Logs` (при установке в Program Files запись в каталог приложения недоступна, поэтому используется профиль пользователя). Для диагностики сбоев в работе приложения приложите к обращению в поддержку последний **planner_errors.log**.
 
