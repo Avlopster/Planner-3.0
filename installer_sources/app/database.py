@@ -242,6 +242,8 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         c.execute("ALTER TABLE employees ADD COLUMN department TEXT")
     if 'default_load_percent' not in emp_columns:
         c.execute("ALTER TABLE employees ADD COLUMN default_load_percent REAL DEFAULT 100")
+    if 'initials' not in emp_columns:
+        c.execute("ALTER TABLE employees ADD COLUMN initials TEXT")
     conn.commit()
 
     # Миграция: completion_percent в project_phases
@@ -249,6 +251,8 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     phase_columns = [col[1] for col in c.fetchall()]
     if 'completion_percent' not in phase_columns:
         c.execute("ALTER TABLE project_phases ADD COLUMN completion_percent INTEGER DEFAULT 0")
+    if 'parent_id' not in phase_columns:
+        c.execute("ALTER TABLE project_phases ADD COLUMN parent_id INTEGER REFERENCES project_phases(id)")
     conn.commit()
 
     # Таблица config

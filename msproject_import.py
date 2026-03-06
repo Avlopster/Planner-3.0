@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Optional
 import xml.etree.ElementTree as ET
 
+import pandas as pd
 import repository
 
 # Namespace MSPDI (Microsoft Project Data Interchange)
@@ -129,7 +130,7 @@ def parse_tasks(root: ET.Element) -> list[dict[str, Any]]:
 def parse_resources(root: ET.Element) -> list[dict[str, Any]]:
     """
     Извлекает ресурсы из Project/Resources/Resource.
-    Каждый ресурс: UID, Name (может отсутствовать).
+    Каждый ресурс: UID, Name (может отсутствовать), Initials (может отсутствовать).
     """
     resources = []
     res_el = root.find(".//pj:Resources", NS)
@@ -141,7 +142,8 @@ def parse_resources(root: ET.Element) -> list[dict[str, Any]]:
     for r in res_el.findall("pj:Resource", NS) or res_el.findall(f"{{{NS['pj']}}}Resource") or []:
         uid = _int_val(r.find("pj:UID", NS) or r.find(f"{{{NS['pj']}}}UID"))
         name = _text(r.find("pj:Name", NS) or r.find(f"{{{NS['pj']}}}Name"))
-        resources.append({"UID": uid, "Name": name})
+        initials = _text(r.find("pj:Initials", NS) or r.find(f"{{{NS['pj']}}}Initials"))
+        resources.append({"UID": uid, "Name": name, "Initials": initials})
     return resources
 
 
@@ -174,6 +176,47 @@ def read_mspdi_file(file_path: str) -> ET.Element:
     return tree.getroot()
 
 
+def get_mspdi_assigned_resources_by_task(root: ET.Element) -> dict[int, list[str]]:
+    """
+    По Assignments, Resources и полю «Исполнитель» (ExtendedAttribute) возвращает для каждого
+    TaskUID список имён ресурсов. Используется для предпросмотра «Назначенные сотрудники» в UI.
+    Для отображения используется Name, при отсутствии — Initials.
+    """
+    resources = parse_resources(root)
+    assignments = parse_assignments(root)
+    tasks = parse_tasks(root)
+    resource_uid_to_name = {}
+    for r in resources:
+        if r.get("UID") is None:
+            continue
+        display = (r.get("Name") or r.get("Initials") or "").strip()
+        if display:
+            resource_uid_to_name[r["UID"]] = display
+    task_uid_to_names: dict[int, list[str]] = {}
+    for a in assignments:
+        task_uid = a.get("TaskUID")
+        if task_uid is None:
+            continue
+        name = resource_uid_to_name.get(a.get("ResourceUID"))
+        if not name:
+            continue
+        if name not in task_uid_to_names.setdefault(task_uid, []):
+            task_uid_to_names[task_uid].append(name)
+    for t in tasks:
+        uid = t.get("UID")
+        executor = t.get("executor")
+        if uid is None or not executor or not (executor or "").strip():
+            continue
+        for part in (executor or "").split(","):
+            name = (part or "").strip()
+            if not name:
+                continue
+            lst = task_uid_to_names.setdefault(uid, [])
+            if name not in lst:
+                lst.append(name)
+    return task_uid_to_names
+
+
 # Тип этапа по умолчанию при импорте из MSPDI (в XML нет аналога «Командировка»/«Обычная работа»)
 DEFAULT_PHASE_TYPE = "Обычная работа"
 
@@ -199,6 +242,64 @@ def _filter_phase_tasks(tasks: list[dict[str, Any]], only_leaf_tasks: bool) -> l
     ]
 
 
+def _compute_parent_uid_for_tasks(tasks: list[dict[str, Any]]) -> None:
+    """
+    Для каждой задачи с OutlineLevel >= 1 проставляет parent_uid:
+    UID последней предыдущей задачи с уровнем (OutlineLevel - 1).
+    Изменяет задачи in-place, добавляя ключ parent_uid (int | None).
+    """
+    last_by_level: dict[int, int] = {}
+    for t in tasks:
+        level = t.get("OutlineLevel", 0)
+        if level < 1:
+            continue
+        parent_uid = last_by_level.get(level - 1)
+        t["parent_uid"] = parent_uid
+        last_by_level[level] = t.get("UID")
+
+
+def _fill_summary_dates_from_children(tasks: list[dict[str, Any]]) -> None:
+    """
+    Для сводных задач (Summary=1) без Start или Finish вычисляет даты по дочерним задачам.
+    Изменяет задачи in-place. Ожидает, что у задач уже есть parent_uid.
+    """
+    uid_to_task = {t["UID"]: t for t in tasks}
+    # Дети по parent_uid
+    children: dict[int, list[dict[str, Any]]] = {}
+    for t in tasks:
+        pu = t.get("parent_uid")
+        if pu is not None:
+            children.setdefault(pu, []).append(t)
+    # Снизу вверх: для каждой задачи без дат — min/max по потомкам с датами
+    def get_descendant_dates(uid: int) -> tuple[Optional[str], Optional[str]]:
+        start_dates: list[str] = []
+        finish_dates: list[str] = []
+        stack = [c["UID"] for c in children.get(uid, [])]
+        while stack:
+            u = stack.pop()
+            task = uid_to_task.get(u)
+            if not task:
+                continue
+            if task.get("Start"):
+                start_dates.append(task["Start"])
+            if task.get("Finish"):
+                finish_dates.append(task["Finish"])
+            for c in children.get(u, []):
+                stack.append(c["UID"])
+        return (min(start_dates) if start_dates else None, max(finish_dates) if finish_dates else None)
+
+    for t in tasks:
+        if t.get("Summary") != 1:
+            continue
+        if t.get("Start") and t.get("Finish"):
+            continue
+        start_d, finish_d = get_descendant_dates(t["UID"])
+        if start_d:
+            t["Start"] = start_d
+        if finish_d:
+            t["Finish"] = finish_d
+
+
 def build_project_and_phases_from_mspdi(
     root: ET.Element,
     only_leaf_tasks: bool = False,
@@ -209,11 +310,13 @@ def build_project_and_phases_from_mspdi(
     Проект: name (из Title или первой задачи OutlineLevel=0), start_date, finish_date
     (из метаданных или min/max по выбранным задачам).
 
-    Этапы: задачи с OutlineLevel >= 1 и заполненными Start/Finish; при only_leaf_tasks=True
-    — только задачи с Summary=0.
+    Этапы: при only_leaf_tasks=False — все задачи с OutlineLevel >= 1 с датами (в т.ч. сводные;
+    даты сводных вычисляются по дочерним), с полями uid и parent_uid для иерархии.
+    При only_leaf_tasks=True — только листовые задачи (Summary=0), без иерархии.
 
     Возвращает (project_dict, phases_list). project_dict: name, start_date, finish_date.
-    phases_list: список dict с ключами name, start_date, end_date, completion_percent.
+    phases_list: список dict с name, start_date, end_date, completion_percent; при
+    only_leaf_tasks=False также uid, parent_uid (для импорта с иерархией).
     """
     meta = parse_project_meta(root)
     tasks = parse_tasks(root)
@@ -228,12 +331,46 @@ def build_project_and_phases_from_mspdi(
     if not project_name:
         project_name = "Проект из MS Project"
 
-    # Фильтр задач для этапов
-    phase_tasks = _filter_phase_tasks(tasks, only_leaf_tasks)
+    if only_leaf_tasks:
+        phase_tasks = _filter_phase_tasks(tasks, only_leaf_tasks=True)
+        # Плоский список без parent_uid
+        phases_list = [
+            {
+                "name": t["Name"],
+                "start_date": t["Start"],
+                "end_date": t["Finish"],
+                "completion_percent": t.get("PercentComplete", 0),
+            }
+            for t in phase_tasks
+        ]
+    else:
+        # Все задачи уровня >= 1 для иерархии (сохраняем исходный индекс в списке tasks)
+        phase_tasks = []
+        for i, t in enumerate(tasks):
+            if t.get("OutlineLevel", 0) >= 1:
+                t = {**t, "_index": i}
+                phase_tasks.append(t)
+        _compute_parent_uid_for_tasks(phase_tasks)
+        _fill_summary_dates_from_children(phase_tasks)
+        # Только с заполненными датами
+        phase_tasks = [t for t in phase_tasks if t.get("Start") and t.get("Finish")]
+        # Порядок: родители перед детьми (по уровню, затем по исходному порядку в XML)
+        phase_tasks_sorted = sorted(phase_tasks, key=lambda t: (t.get("OutlineLevel", 1), t.get("_index", 0)))
+        phases_list = [
+            {
+                "name": t["Name"],
+                "start_date": t["Start"],
+                "end_date": t["Finish"],
+                "completion_percent": t.get("PercentComplete", 0),
+                "uid": t["UID"],
+                "parent_uid": t.get("parent_uid"),
+            }
+            for t in phase_tasks_sorted
+        ]
 
     # Даты проекта: из метаданных или min/max по этапам
-    start_dates = [t["Start"] for t in phase_tasks if t.get("Start")]
-    finish_dates = [t["Finish"] for t in phase_tasks if t.get("Finish")]
+    start_dates = [p["start_date"] for p in phases_list if p.get("start_date")]
+    finish_dates = [p["end_date"] for p in phases_list if p.get("end_date")]
     if meta.get("start_date"):
         start_dates = start_dates or [meta["start_date"]]
     if meta.get("finish_date"):
@@ -249,16 +386,6 @@ def build_project_and_phases_from_mspdi(
         "start_date": project_start,
         "finish_date": project_finish,
     }
-
-    phases_list = [
-        {
-            "name": t["Name"],
-            "start_date": t["Start"],
-            "end_date": t["Finish"],
-            "completion_percent": t.get("PercentComplete", 0),
-        }
-        for t in phase_tasks
-    ]
 
     return project_dict, phases_list
 
@@ -320,6 +447,7 @@ def import_mspdi_project_and_phases(
         return None, 0, errors
 
     success_phases = 0
+    uid_to_phase_id: dict[int, int] = {}
     for ph in phases_list:
         name = (ph.get("name") or "").strip()
         if not name:
@@ -333,22 +461,22 @@ def import_mspdi_project_and_phases(
         if start_d > end_d:
             errors.append(f"Этап «{name}»: дата начала позже даты окончания")
             continue
+        parent_id: Optional[int] = None
+        if ph.get("parent_uid") is not None:
+            parent_id = uid_to_phase_id.get(ph["parent_uid"])
         try:
-            cur.execute(
-                """
-                INSERT INTO project_phases (project_id, name, phase_type, start_date, end_date, completion_percent)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    project_id,
-                    name,
-                    DEFAULT_PHASE_TYPE,
-                    start_d,
-                    end_d,
-                    ph.get("completion_percent", 0),
-                ),
+            phase_id = repository.insert_phase(
+                conn,
+                project_id,
+                name,
+                DEFAULT_PHASE_TYPE,
+                start_d,
+                end_d,
+                ph.get("completion_percent", 0),
+                parent_id=parent_id,
             )
-            conn.commit()
+            if phase_id is not None and ph.get("uid") is not None:
+                uid_to_phase_id[ph["uid"]] = phase_id
             success_phases += 1
         except Exception as e:
             errors.append(f"Этап «{name}»: {e}")
@@ -359,62 +487,142 @@ def import_mspdi_project_and_phases(
     return project_id, success_phases, errors
 
 
+def _normalize_resource_name(name: Optional[str]) -> str:
+    """Нормализует имя ресурса для сопоставления с справочником: trim, схлопывание пробелов."""
+    if not name:
+        return ""
+    s = (name or "").strip()
+    return " ".join(s.split()) if s else ""
+
+
+def _normalize_initials(value: Optional[str]) -> str:
+    """Нормализует инициалы для сопоставления: trim, схлопывание пробелов."""
+    if not value:
+        return ""
+    s = (value or "").strip()
+    return " ".join(s.split()) if s else ""
+
+
+def _find_employee_id_by_name(employees_df: pd.DataFrame, name: str) -> Optional[int]:
+    """Ищет id сотрудника по имени: нормализованное сравнение, при неудаче — без учёта регистра."""
+    norm = _normalize_resource_name(name)
+    if not norm:
+        return None
+    # Точное совпадение после нормализации
+    match = employees_df[employees_df["name"].apply(lambda x: _normalize_resource_name(str(x)) == norm)]
+    if not match.empty:
+        return int(match.iloc[0]["id"])
+    # Запасной вариант: без учёта регистра (для совместимости с разным написанием в XML и БД)
+    norm_lower = norm.lower()
+    for _, row in employees_df.iterrows():
+        if _normalize_resource_name(str(row.get("name", ""))).lower() == norm_lower:
+            return int(row["id"])
+    return None
+
+
+def _find_employee_id(
+    employees_df: pd.DataFrame,
+    name: Optional[str] = None,
+    initials: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Ищет id сотрудника по инициалам (приоритет) и/или имени.
+    Сначала попытка по полю initials в БД, при неудаче — по name.
+    """
+    if "initials" in employees_df.columns:
+        init_norm = _normalize_initials(initials)
+        if init_norm:
+            match = employees_df[
+                employees_df["initials"].fillna("").apply(
+                    lambda x: _normalize_initials(str(x)) == init_norm
+                )
+            ]
+            if not match.empty:
+                return int(match.iloc[0]["id"])
+            init_lower = init_norm.lower()
+            for _, row in employees_df.iterrows():
+                if _normalize_initials(str(row.get("initials", "") or "")).lower() == init_lower:
+                    return int(row["id"])
+    if name:
+        return _find_employee_id_by_name(employees_df, name)
+    return None
+
+
 def import_mspdi_assignments(
     conn: sqlite3.Connection,
     root: ET.Element,
     project_id: int,
     only_leaf_tasks: bool = False,
     default_load_percent: float = 100.0,
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], list[str]]:
     """
     Импортирует назначения на этапы из MSPDI: из Assignments (TaskUID, ResourceUID, Units)
     и при отсутствии реальных ресурсов — из ExtendedAttribute «Исполнитель» у задач.
 
-    Сопоставление Task UID → phase_id выполняется по порядку этапов (этапы в БД в том же
-    порядке, что и отфильтрованные задачи в XML). ResourceUID=-65535 пропускается.
+    Сопоставление с сотрудниками в БД — по полю Initials (если задано), иначе по имени (нормализация пробелов/регистра).
+    Сопоставление Task UID → phase_id выполняется по порядку этапов.
 
-    Возвращает (success_count, list_of_errors).
+    Возвращает (success_count, list_of_errors, list_of_not_found_names).
     """
     errors: list[str] = []
+    not_found: list[str] = []
     tasks = parse_tasks(root)
     resources = parse_resources(root)
     assignments = parse_assignments(root)
-    phase_tasks = _filter_phase_tasks(tasks, only_leaf_tasks)
 
     phases_df = repository.load_phases(conn)
     phases_df = phases_df[phases_df["project_id"] == project_id].sort_values("id").reset_index(drop=True)
     employees_df = repository.load_employees(conn)
 
-    if len(phase_tasks) != len(phases_df):
+    # Маппинг Task UID → phase_id: при иерархии (only_leaf_tasks=False) порядок этапов в БД = порядок из build_project_and_phases_from_mspdi
+    _, phases_list_for_order = build_project_and_phases_from_mspdi(root, only_leaf_tasks)
+    if len(phases_list_for_order) != len(phases_df):
         errors.append(
-            f"Количество этапов в XML ({len(phase_tasks)}) не совпадает с количеством в БД ({len(phases_df)})"
+            f"Количество этапов в XML ({len(phases_list_for_order)}) не совпадает с количеством в БД ({len(phases_df)})"
         )
-        return 0, errors
+        return 0, errors, not_found
 
     task_uid_to_phase_id: dict[int, int] = {}
-    for i, task in enumerate(phase_tasks):
-        if i < len(phases_df):
-            task_uid_to_phase_id[task["UID"]] = int(phases_df.iloc[i]["id"])
+    if phases_list_for_order and phases_list_for_order[0].get("uid") is not None:
+        for i, ph in enumerate(phases_list_for_order):
+            if i < len(phases_df) and ph.get("uid") is not None:
+                task_uid_to_phase_id[ph["uid"]] = int(phases_df.iloc[i]["id"])
+    else:
+        phase_tasks = _filter_phase_tasks(tasks, only_leaf_tasks)
+        for i, task in enumerate(phase_tasks):
+            if i < len(phases_df):
+                task_uid_to_phase_id[task["UID"]] = int(phases_df.iloc[i]["id"])
 
-    resource_uid_to_name = {r["UID"]: r["Name"] for r in resources if r.get("Name")}
+    resource_uid_to_resource = {r["UID"]: r for r in resources if r.get("UID") is not None}
     cur = conn.cursor()
     success = 0
     seen_assignments: set[tuple[int, int]] = set()
+    seen_not_found: set[str] = set()
 
     for a in assignments:
         if a.get("ResourceUID") is None or a["ResourceUID"] == RESOURCE_UID_UNASSIGNED:
             continue
-        resource_name = resource_uid_to_name.get(a["ResourceUID"])
-        if not resource_name or not (resource_name or "").strip():
+        resource = resource_uid_to_resource.get(a["ResourceUID"])
+        if not resource:
+            continue
+        resource_name = (resource.get("Name") or "").strip()
+        resource_initials = (resource.get("Initials") or "").strip()
+        display_name = resource_name or resource_initials or ""
+        if not display_name:
             continue
         phase_id = task_uid_to_phase_id.get(a["TaskUID"])
         if phase_id is None:
             continue
-        emp_row = employees_df[employees_df["name"] == resource_name.strip()]
-        if emp_row.empty:
-            errors.append(f"Сотрудник «{resource_name}» не найден в справочнике")
+        employee_id = _find_employee_id(
+            employees_df,
+            name=resource_name if resource_name else None,
+            initials=resource_initials if resource_initials else None,
+        )
+        if employee_id is None:
+            if display_name not in seen_not_found:
+                seen_not_found.add(display_name)
+                not_found.append(display_name)
             continue
-        employee_id = int(emp_row.iloc[0]["id"])
         load_pct = round((a.get("Units") or 1.0) * 100.0, 1)
         key = (phase_id, employee_id)
         if key in seen_assignments:
@@ -435,25 +643,36 @@ def import_mspdi_assignments(
             seen_assignments.add(key)
             success += 1
         except Exception as e:
-            errors.append(f"Назначение {resource_name} на этап: {e}")
+            errors.append(f"Назначение {display_name} на этап: {e}")
 
-    for task in phase_tasks:
-        executor = task.get("executor")
+    uid_to_task = {t["UID"]: t for t in tasks}
+    executor_items: list[tuple[Optional[int], Optional[str]]] = []
+    if phases_list_for_order and phases_list_for_order[0].get("uid") is not None:
+        for ph in phases_list_for_order:
+            pid = task_uid_to_phase_id.get(ph["uid"]) if ph.get("uid") is not None else None
+            task = uid_to_task.get(ph["uid"]) if ph.get("uid") is not None else None
+            executor_items.append((pid, task.get("executor") if task else None))
+    else:
+        phase_tasks = _filter_phase_tasks(tasks, only_leaf_tasks)
+        for task in phase_tasks:
+            executor_items.append((task_uid_to_phase_id.get(task["UID"]), task.get("executor")))
+
+    for phase_id, executor in executor_items:
         if not executor or not (executor or "").strip():
             continue
-        phase_id = task_uid_to_phase_id.get(task["UID"])
         if phase_id is None:
             continue
-        names = [n.strip() for n in executor.split(",") if n.strip()]
+        names = [_normalize_resource_name(n) for n in executor.split(",") if _normalize_resource_name(n)]
         if not names:
             continue
         load_each = default_load_percent if len(names) == 1 else round(default_load_percent / len(names), 1)
         for emp_name in names:
-            emp_row = employees_df[employees_df["name"] == emp_name]
-            if emp_row.empty:
-                errors.append(f"Сотрудник «{emp_name}» (Исполнитель) не найден в справочнике")
+            employee_id = _find_employee_id_by_name(employees_df, emp_name)
+            if employee_id is None:
+                if emp_name not in seen_not_found:
+                    seen_not_found.add(emp_name)
+                    not_found.append(emp_name)
                 continue
-            employee_id = int(emp_row.iloc[0]["id"])
             key = (phase_id, employee_id)
             if key in seen_assignments:
                 continue
@@ -475,4 +694,4 @@ def import_mspdi_assignments(
             except Exception as e:
                 errors.append(f"Назначение «{emp_name}» (Исполнитель): {e}")
 
-    return success, errors
+    return success, errors, not_found

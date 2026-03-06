@@ -16,7 +16,8 @@ from components import menu_button
 # Одно подключение к БД на всю сессию; фактический путь (в т.ч. fallback) хранится в session_state
 _initial_db_path = os.path.abspath(app_config.DB_PATH)
 if "_db_conn" not in st.session_state:
-    conn, actual_path = db.get_connection(_initial_db_path)
+    path_to_use = st.session_state.get("_db_path", _initial_db_path)
+    conn, actual_path = db.get_connection(path_to_use)
     st.session_state["_db_conn"] = conn
     st.session_state["_db_path"] = actual_path
     db.init_schema(conn)

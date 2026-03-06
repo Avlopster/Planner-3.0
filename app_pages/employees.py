@@ -19,12 +19,14 @@ def render(conn):
     df_roles = repository.load_roles(conn)
     cur = conn.cursor()
     with st.expander("➕ Добавить нового сотрудника", expanded=True):
-        col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 2, 1])
+        col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 2, 1, 2, 1])
         with col1:
             if 'new_employee_name' not in st.session_state:
                 st.session_state.new_employee_name = ""
             name = st.text_input("ФИО", value=st.session_state.new_employee_name, key="new_emp_name_input")
         with col2:
+            initials = st.text_input("Инициалы", value="", key="new_emp_initials", placeholder="Не указаны")
+        with col3:
             if not df_roles.empty:
                 df_roles_sorted = df_roles.sort_values('name')
                 if 'new_employee_role_id' not in st.session_state:
@@ -40,16 +42,16 @@ def render(conn):
                 log_user_facing_error(logging.WARNING, msg)
                 st.error(msg)
                 role_id = None
-        with col3:
-            department = st.text_input("Отдел", value="", key="new_emp_dept", placeholder="Не указан")
         with col4:
-            default_load = st.number_input("Ставка, %", min_value=10, max_value=100, value=100, step=5, key="new_emp_load")
+            department = st.text_input("Отдел", value="", key="new_emp_dept", placeholder="Не указан")
         with col5:
+            default_load = st.number_input("Ставка, %", min_value=10, max_value=100, value=100, step=5, key="new_emp_load")
+        with col6:
             if st.button("Добавить"):
                 if name and role_id is not None:
                     cur.execute(
-                        "INSERT INTO employees (name, role_id, department, default_load_percent) VALUES (?,?,?,?)",
-                        (name, role_id, department.strip() or None, default_load)
+                        "INSERT INTO employees (name, role_id, department, default_load_percent, initials) VALUES (?,?,?,?,?)",
+                        (name, role_id, department.strip() or None, default_load, initials.strip() or None)
                     )
                     conn.commit()
                     actions_log.info("Добавлен сотрудник '%s' (role_id=%s)", name, role_id)
@@ -67,30 +69,34 @@ def render(conn):
     st.subheader("Список сотрудников")
     df_emp = repository.load_employees(conn)
     if not df_emp.empty:
-        search_emp = st.text_input("🔍 Поиск по ФИО, роли или отделу", key="emp_search", placeholder="Введите текст...")
+        search_emp = st.text_input("🔍 Поиск по ФИО, инициалам, роли или отделу", key="emp_search", placeholder="Введите текст...")
         if search_emp:
             mask = (df_emp['name'].str.contains(search_emp, case=False, na=False)) | (df_emp['role_name'].str.contains(search_emp, case=False, na=False))
             if 'department' in df_emp.columns:
                 mask = mask | (df_emp['department'].fillna('').str.contains(search_emp, case=False, na=False))
+            if 'initials' in df_emp.columns:
+                mask = mask | (df_emp['initials'].fillna('').str.contains(search_emp, case=False, na=False))
             df_emp = df_emp[mask]
     if not df_emp.empty:
         for num, (idx, row) in enumerate(df_emp.iterrows(), start=1):
-            col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 2, 2, 2, 1, 1])
+            col1, col2, col3, col4, col5, col6, col7, col8 = st.columns([1, 2, 1, 2, 2, 2, 1, 1])
             with col1:
                 st.write(num)
             with col2:
                 st.write(row['name'])
             with col3:
-                st.write(row['role_name'])
+                st.write(row.get('initials', '') or '—')
             with col4:
-                st.write(row.get('department', '') or '—')
+                st.write(row['role_name'])
             with col5:
+                st.write(row.get('department', '') or '—')
+            with col6:
                 vacs = repository.get_employee_vacations(conn, row['id'])
                 st.write(f"{len(vacs)} периодов")
-            with col6:
+            with col7:
                 if st.button("✏️", key=f"edit_emp_{row['id']}"):
                     st.session_state[f'editing_emp_{row["id"]}'] = True
-            with col7:
+            with col8:
                 if st.button("❌", key=f"del_emp_{row['id']}"):
                     success, msg = repository.delete_employee(conn, row['id'])
                     if success:
@@ -103,6 +109,7 @@ def render(conn):
             if st.session_state.get(f'editing_emp_{row["id"]}', False):
                 with st.form(key=f"edit_emp_form_{row['id']}"):
                     new_name = st.text_input("ФИО", value=row['name'])
+                    new_initials = st.text_input("Инициалы", value=str(row.get('initials', '') or ''))
                     df_roles_sorted = df_roles.sort_values('name')
                     role_options = df_roles_sorted['id'].tolist()
                     current_role = row['role_id']
@@ -121,8 +128,8 @@ def render(conn):
                     with col1:
                         if st.form_submit_button("💾 Сохранить"):
                             cur.execute(
-                                "UPDATE employees SET name = ?, role_id = ?, department = ?, default_load_percent = ? WHERE id = ?",
-                                (new_name, new_role_id, new_dept.strip() or None, new_load, row['id'])
+                                "UPDATE employees SET name = ?, role_id = ?, department = ?, default_load_percent = ?, initials = ? WHERE id = ?",
+                                (new_name, new_role_id, new_dept.strip() or None, new_load, new_initials.strip() or None, row['id'])
                             )
                             conn.commit()
                             actions_log.info("Обновлён сотрудник id=%s", row['id'])

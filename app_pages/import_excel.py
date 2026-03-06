@@ -280,14 +280,30 @@ def render(conn):
                 st.write("**Проект:**", project_dict.get("name", "—"))
                 st.write("**Даты:**", project_dict.get("start_date", "—"), "—", project_dict.get("finish_date", "—"))
                 if phases_list:
+                    task_uid_to_names = msproject_import.get_mspdi_assigned_resources_by_task(root)
+                    if phases_list[0].get("uid") is not None:
+                        phase_uids = [p.get("uid") for p in phases_list]
+                    else:
+                        tasks = msproject_import.parse_tasks(root)
+                        phase_tasks = msproject_import._filter_phase_tasks(tasks, True)
+                        phase_uids = [
+                            phase_tasks[i]["UID"] if i < len(phase_tasks) else None
+                            for i in range(len(phases_list))
+                        ]
+                    assigned_col = [
+                        ", ".join(task_uid_to_names.get(uid, [])) if uid is not None else ""
+                        for uid in phase_uids
+                    ]
                     preview_df = pd.DataFrame(phases_list).rename(columns={
                         "name": "Название этапа",
                         "start_date": "Дата начала",
                         "end_date": "Дата окончания",
                         "completion_percent": "% выполнения",
                     })
+                    preview_df["Назначенные сотрудники"] = assigned_col
+                    display_cols = ["Название этапа", "Дата начала", "Дата окончания", "% выполнения", "Назначенные сотрудники"]
                     st.dataframe(
-                        preview_df[["Название этапа", "Дата начала", "Дата окончания", "% выполнения"]],
+                        preview_df[[c for c in display_cols if c in preview_df.columns]],
                         width="stretch",
                         hide_index=True,
                     )
@@ -305,18 +321,30 @@ def render(conn):
                             log_user_facing_error(logging.ERROR, msg)
                             st.error(msg)
                     else:
-                        actions_log.info("Импорт MS Project: проект id=%s, этапов %s", project_id, phases_count)
+                        actions_log.info(
+                            "Импорт MS Project: проект id=%s, этапов %s%s",
+                            project_id, phases_count,
+                            " (с иерархией)" if not only_leaf else "",
+                        )
                         st.success(f"Проект создан (id={project_id}), этапов: {phases_count}.")
                         for msg in err_phases:
                             log_user_facing_error(logging.WARNING, msg)
                             st.warning(msg)
-                        assign_count, err_assign = msproject_import.import_mspdi_assignments(
+                        assign_count, err_assign, not_found_names = msproject_import.import_mspdi_assignments(
                             conn, root, project_id, only_leaf_tasks=only_leaf
                         )
                         st.success(f"Назначений на этапы: {assign_count}.")
                         for msg in err_assign:
                             log_user_facing_error(logging.WARNING, msg)
                             st.warning(msg)
+                        if not_found_names:
+                            st.warning(
+                                "Ресурсы из XML, не найденные в справочнике сотрудников: "
+                                + ", ".join(f"«{n}»" for n in not_found_names)
+                                + ". Добавьте их в разделе «Сотрудники» или проверьте написание имён."
+                            )
+                            for name in not_found_names:
+                                log_user_facing_error(logging.WARNING, f"Ресурс не найден при импорте XML: {name}")
                         st.cache_data.clear()
                         st.rerun()
             except Exception as e:

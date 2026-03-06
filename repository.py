@@ -141,7 +141,43 @@ def load_phases(conn: sqlite3.Connection) -> pd.DataFrame:
             df['project_id'] = df['project_id'].apply(lambda x: safe_int(x))
         if 'completion_percent' in df.columns:
             df['completion_percent'] = df['completion_percent'].apply(lambda x: safe_int(x) if pd.notna(x) else 0)
+        if 'parent_id' in df.columns:
+            df['parent_id'] = df['parent_id'].apply(lambda x: safe_int(x) if pd.notna(x) and x is not None else None)
     return df
+
+
+def phases_tree_order(proj_phases: pd.DataFrame) -> List[Tuple[pd.Series, int]]:
+    """
+    Возвращает список (phase_row, depth) в порядке обхода дерева сверху вниз (родитель → дети).
+    depth=0 — верхний уровень, depth=1 — подэтап и т.д. Если parent_id нет или все пустые — все этапы с depth=0.
+    """
+    if proj_phases.empty:
+        return []
+    if "parent_id" not in proj_phases.columns or proj_phases["parent_id"].notna().sum() == 0:
+        return [(row, 0) for _, row in proj_phases.sort_values("id").iterrows()]
+    children_map: dict = {}
+    for _, row in proj_phases.iterrows():
+        pid = row.get("parent_id")
+        if pid is not None and pd.notna(pid):
+            pid = int(pid)
+            children_map.setdefault(pid, []).append(int(row["id"]))
+    for pid in children_map:
+        children_map[pid].sort()
+    by_id = proj_phases.set_index("id", drop=False)
+    roots = proj_phases[proj_phases["parent_id"].isna()]["id"].tolist()
+    roots.sort()
+    result: List[Tuple[pd.Series, int]] = []
+
+    def dfs(phase_id: int, depth: int) -> None:
+        if phase_id not in by_id.index:
+            return
+        result.append((by_id.loc[phase_id], depth))
+        for cid in children_map.get(phase_id, []):
+            dfs(cid, depth + 1)
+
+    for rid in roots:
+        dfs(int(rid), 0)
+    return result
 
 
 def load_phase_assignments(conn: sqlite3.Connection) -> pd.DataFrame:
@@ -309,19 +345,90 @@ def delete_role(conn: sqlite3.Connection, role_id: int) -> Tuple[bool, Optional[
     return True, None
 
 
-def update_project_dates_from_phases(conn: sqlite3.Connection, project_id: int) -> bool:
+def _date_to_str(val) -> str:
+    """Приводит дату к строке YYYY-MM-DD для записи в БД."""
+    if val is None:
+        return ""
+    if hasattr(val, "isoformat") and callable(getattr(val, "isoformat")):
+        return val.isoformat()[:10]
+    return str(val)[:10]
+
+
+def update_parent_phase_dates_from_children(conn: sqlite3.Connection, project_id: int) -> None:
+    """
+    Пересчитывает даты родительских этапов снизу вверх: start_date = min(даты дочерних),
+    end_date = max(даты дочерних). Обрабатывает этапы от листьев к корню. Делает commit.
+    """
     phases = load_phases(conn)
-    proj_phases = phases[phases['project_id'] == project_id]
+    proj_phases = phases[phases["project_id"] == project_id].copy()
+    if proj_phases.empty or "parent_id" not in proj_phases.columns:
+        return
+    proj_phases["start_date"] = pd.to_datetime(proj_phases["start_date"], errors="coerce")
+    proj_phases["end_date"] = pd.to_datetime(proj_phases["end_date"], errors="coerce")
+    children_map: dict = {}
+    for _, row in proj_phases.iterrows():
+        pid = row.get("parent_id")
+        if pid is not None and pd.notna(pid):
+            children_map.setdefault(int(pid), []).append(int(row["id"]))
+
+    def depth(phase_id: int) -> int:
+        kids = children_map.get(phase_id)
+        if not kids:
+            return 0
+        return 1 + max(depth(kid) for kid in kids)
+
+    phase_ids_by_depth = sorted(proj_phases["id"].tolist(), key=lambda pid: depth(int(pid)))
+    cur = conn.cursor()
+    by_id = proj_phases.set_index("id", drop=False)
+    for phase_id in phase_ids_by_depth:
+        kids = children_map.get(phase_id)
+        if not kids:
+            continue
+        valid = [by_id.loc[kid] for kid in kids if kid in by_id.index]
+        if not valid:
+            continue
+        starts = [r["start_date"] for r in valid if pd.notna(r.get("start_date"))]
+        ends = [r["end_date"] for r in valid if pd.notna(r.get("end_date"))]
+        if not starts or not ends:
+            continue
+        start = min(starts)
+        end = max(ends)
+        start_s = _date_to_str(start)
+        end_s = _date_to_str(end)
+        cur.execute(
+            "UPDATE project_phases SET start_date = ?, end_date = ? WHERE id = ?",
+            (start_s, end_s, phase_id),
+        )
+        by_id.loc[phase_id, "start_date"] = start
+        by_id.loc[phase_id, "end_date"] = end
+    conn.commit()
+
+
+def update_project_dates_from_phases(conn: sqlite3.Connection, project_id: int) -> bool:
+    """
+    Пересчитывает даты проекта по этапам: сначала обновляет даты родительских этапов
+    из подэтапов (снизу вверх), затем задаёт даты проекта по верхнеуровневым этапам
+    (parent_id IS NULL): project_start = min(start), project_end = max(end).
+    """
+    update_parent_phase_dates_from_children(conn, project_id)
+    phases = load_phases(conn)
+    proj_phases = phases[phases["project_id"] == project_id]
+    if "parent_id" in proj_phases.columns:
+        top_level = proj_phases[proj_phases["parent_id"].isna()]
+        if not top_level.empty:
+            proj_phases = top_level
     if not proj_phases.empty:
-        start = proj_phases['start_date'].min()
-        end = proj_phases['end_date'].max()
-        if hasattr(start, 'isoformat'):
-            start = start.isoformat() if callable(getattr(start, 'isoformat')) else str(start)
-        if hasattr(end, 'isoformat'):
-            end = end.isoformat() if callable(getattr(end, 'isoformat')) else str(end)
-        conn.cursor().execute("UPDATE projects SET project_start = ?, project_end = ? WHERE id = ?", (start, end, project_id))
-        conn.commit()
-        return True
+        start = proj_phases["start_date"].min()
+        end = proj_phases["end_date"].max()
+        start_s = _date_to_str(start)
+        end_s = _date_to_str(end)
+        if start_s and end_s:
+            conn.cursor().execute(
+                "UPDATE projects SET project_start = ?, project_end = ? WHERE id = ?",
+                (start_s, end_s, project_id),
+            )
+            conn.commit()
+            return True
     return False
 
 
@@ -340,15 +447,17 @@ def insert_phase(
     start_date: str,
     end_date: str,
     completion_percent: int,
-) -> None:
-    """Добавляет этап к проекту. Делает commit."""
+    parent_id: Optional[int] = None,
+) -> Optional[int]:
+    """Добавляет этап к проекту. Делает commit. Возвращает id вставленного этапа (lastrowid)."""
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO project_phases (project_id, name, phase_type, start_date, end_date, completion_percent)
-           VALUES (?,?,?,?,?,?)""",
-        (project_id, name, phase_type, start_date, end_date, completion_percent),
+        """INSERT INTO project_phases (project_id, name, phase_type, start_date, end_date, completion_percent, parent_id)
+           VALUES (?,?,?,?,?,?,?)""",
+        (project_id, name, phase_type, start_date, end_date, completion_percent, parent_id),
     )
     conn.commit()
+    return cur.lastrowid
 
 
 def update_phase(
@@ -360,15 +469,24 @@ def update_phase(
     end_date: str,
     completion_percent: int,
     assignments: Optional[List[Tuple[int, float]]] = None,
+    parent_id: Optional[int] = None,
 ) -> None:
-    """Обновляет этап и его назначения. assignments — список (employee_id, load_percent); если None или пусто — все назначения удаляются. Делает commit."""
+    """Обновляет этап и его назначения. assignments — список (employee_id, load_percent); если None или пусто — все назначения удаляются. parent_id — родительский этап (None не меняет). Делает commit."""
     cur = conn.cursor()
-    cur.execute(
-        """UPDATE project_phases SET
-           name=?, phase_type=?, start_date=?, end_date=?, completion_percent=?
-           WHERE id=?""",
-        (name, phase_type, start_date, end_date, completion_percent, phase_id),
-    )
+    if parent_id is not None:
+        cur.execute(
+            """UPDATE project_phases SET
+               name=?, phase_type=?, start_date=?, end_date=?, completion_percent=?, parent_id=?
+               WHERE id=?""",
+            (name, phase_type, start_date, end_date, completion_percent, parent_id, phase_id),
+        )
+    else:
+        cur.execute(
+            """UPDATE project_phases SET
+               name=?, phase_type=?, start_date=?, end_date=?, completion_percent=?
+               WHERE id=?""",
+            (name, phase_type, start_date, end_date, completion_percent, phase_id),
+        )
     cur.execute("DELETE FROM phase_assignments WHERE phase_id = ?", (phase_id,))
     if assignments:
         for (employee_id, load_percent) in assignments:

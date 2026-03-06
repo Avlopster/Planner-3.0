@@ -109,8 +109,9 @@ def render(conn):
                 proj_start_dt = pd.to_datetime(proj_start)
                 proj_end_dt = pd.to_datetime(proj_end)
                 proj_status = (proj.get('status_name') or 'Не указан').strip() or 'Не указан'
+                project_label = f"ПРОЕКТ: {proj['name']}"
                 tasks.append(dict(
-                    Задача=f"📁 {proj['name']}",
+                    Задача=project_label,
                     Начало=proj_start_dt,
                     Окончание=proj_end_dt,
                     Тип=f"Проект ({proj_status})",
@@ -123,7 +124,7 @@ def render(conn):
                     completed_end_dt = proj_start_dt + delta
                     pct_str = f"{round(percent * 100)}%"
                     tasks.append(dict(
-                        Задача=f"📁 {proj['name']}",
+                        Задача=project_label,
                         Начало=proj_start_dt,
                         Окончание=completed_end_dt,
                         Тип='Выполнено',
@@ -131,10 +132,10 @@ def render(conn):
                     ))
                 proj_phases = phases_df[phases_df['project_id'] == proj['id']]
                 if st.session_state.gantt_project_expand.get(pid, default_show_phases):
-                    for _, ph in proj_phases.iterrows():
+                    for ph, depth in repository.phases_tree_order(proj_phases):
                         ph_start_dt = pd.to_datetime(ph['start_date'])
                         ph_end_dt = pd.to_datetime(ph['end_date'])
-                        phase_label = f"  • {proj['name']} — {ph['name']}"
+                        phase_label = "  " * (depth + 1) + f"• {ph['name']} ({proj['name']})"
                         tasks.append(dict(
                             Задача=phase_label,
                             Начало=ph_start_dt,
@@ -159,6 +160,8 @@ def render(conn):
                 task_order = list(dict.fromkeys(df_tasks["Задача"].tolist()))
                 n_rows = len(task_order)
                 gantt_height_default = max(500, 32 * n_rows)
+                max_label_len = max((len(str(task)) for task in task_order), default=0)
+                left_margin = 120 if max_label_len > 45 else (105 if max_label_len > 28 else 90)
                 gantt_height = st.slider(
                     "Высота диаграммы (px)",
                     min_value=400,
@@ -191,9 +194,9 @@ def render(conn):
                 )
                 apply_chart_theme(fig)
                 fig.update_yaxes(autorange=True)
-                fig.update_layout(height=gantt_height, bargap=0.15, margin=dict(t=40, b=40, l=80, r=40))
+                fig.update_layout(height=gantt_height, bargap=0.15, margin=dict(t=40, b=40, l=left_margin, r=40))
                 fig.update_xaxes(tickformat="%d.%m.%Y", showgrid=True, gridwidth=0.5, linewidth=0.5, tickfont=dict(size=10))
-                fig.update_yaxes(tickfont=dict(size=10), linewidth=0.5)
+                fig.update_yaxes(tickfont=dict(size=11), linewidth=0.5)
                 # Уникальный key при каждом рендере страницы, чтобы не оставалось ссылок на старый
                 # медиафайл в Streamlit memory storage (избегаем MediaFileStorageError при переходе в Гант).
                 if "gantt_plotly_key" not in st.session_state:

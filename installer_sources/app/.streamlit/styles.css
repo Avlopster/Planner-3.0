@@ -18,11 +18,40 @@
 .stMainBlockContainer,
 [data-testid="stAppViewContainer"] main .block-container {
     max-width: 100% !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
+    padding-left: 0.85rem !important;
+    padding-right: 0.85rem !important;
 }
 
 /* Отступ между крупными секциями контента (компактнее для большего объёма на экране) */
 [data-testid="stVerticalBlock"] > div {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Умеренно уплотняем сетки и формы, не ломая остальные страницы */
+[data-testid="stHorizontalBlock"] {
+    gap: 0.5rem;
+}
+
+[data-testid="stExpander"] {
+    margin-bottom: 0.35rem;
+}
+
+[data-testid="stWidgetLabel"] {
+    margin-bottom: 0.15rem;
+}
+
+[data-testid="stForm"] {
+    margin-top: 0.35rem;
+    margin-bottom: 0.35rem;
+}
+
+[data-testid="stForm"] [data-testid="stVerticalBlock"] > div {
+    margin-bottom: 0.4rem;
+}
+
+.stButton > button,
+[data-testid="baseButton-secondary"],
+[data-testid="baseButton-primary"] {
+    padding-top: 0.3rem;
+    padding-bottom: 0.3rem;
 }
