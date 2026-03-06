@@ -49,8 +49,23 @@ def _render_projects_compact_css() -> None:
     )
 
 
-def _render_new_project_form(conn, df_emp_sorted: pd.DataFrame) -> None:
-    """Форма создания нового проекта: поля и кнопка «Создать проект»."""
+def _get_lead_candidates_df(df_emp: pd.DataFrame, conn) -> pd.DataFrame:
+    """Список сотрудников-кандидатов на ведущего: только роли из конфига «руководители» (capacity_role_senior_ids)."""
+    cfg = repository.load_capacity_config(conn)
+    senior_ids = cfg.get("capacity_role_senior_ids") or []
+    if not senior_ids:
+        return df_emp.sort_values("name") if not df_emp.empty else df_emp
+    mask = df_emp["role_id"].isin(senior_ids)
+    df_lead = df_emp.loc[mask]
+    return df_lead.sort_values("name") if not df_lead.empty else df_emp.sort_values("name")
+
+
+def _render_new_project_form(conn, df_emp_sorted: pd.DataFrame, df_lead_candidates: pd.DataFrame) -> None:
+    """Форма создания нового проекта: поля и кнопка «Создать проект». В поле «Ведущий специалист» — только сотрудники с ролью руководителя (из конфига)."""
+    lead_options = df_lead_candidates["id"].tolist()
+    if not lead_options:
+        lead_options = df_emp_sorted["id"].tolist()
+    lead_df = df_lead_candidates if not df_lead_candidates.empty else df_emp_sorted
     col1, col2, col3 = st.columns([1.8, 1.6, 1.4])
     with col1:
         if 'new_project_name' not in st.session_state:
@@ -58,20 +73,24 @@ def _render_new_project_form(conn, df_emp_sorted: pd.DataFrame) -> None:
         if 'new_project_client' not in st.session_state:
             st.session_state.new_project_client = ""
         if 'new_project_lead_id' not in st.session_state:
-            st.session_state.new_project_lead_id = df_emp_sorted['id'].tolist()[0] if not df_emp_sorted.empty else None
+            st.session_state.new_project_lead_id = lead_options[0] if lead_options else None
         if 'new_project_lead_load' not in st.session_state:
             st.session_state.new_project_lead_load = 50
+        if st.session_state.new_project_lead_id not in lead_options and lead_options:
+            st.session_state.new_project_lead_id = lead_options[0]
 
         proj_name = st.text_input("Название проекта", value=st.session_state.new_project_name, key="new_proj_name")
         client_company = st.text_input("Компания клиента", value=st.session_state.new_project_client, key="new_proj_client")
 
     with col2:
         lead_id = st.selectbox(
-            "Ведущий специалист", df_emp_sorted['id'].tolist(),
-            format_func=lambda x: f"{df_emp_sorted[df_emp_sorted['id']==x]['name'].values[0]} ({df_emp_sorted[df_emp_sorted['id']==x]['role_name'].values[0]})",
-            index=df_emp_sorted['id'].tolist().index(st.session_state.new_project_lead_id) if st.session_state.new_project_lead_id in df_emp_sorted['id'].tolist() else 0,
+            "Ведущий специалист", lead_options,
+            format_func=lambda x: f"{lead_df[lead_df['id']==x]['name'].values[0]} ({lead_df[lead_df['id']==x]['role_name'].values[0]})",
+            index=lead_options.index(st.session_state.new_project_lead_id) if st.session_state.new_project_lead_id in lead_options else 0,
             key="new_proj_lead"
         )
+        if not (repository.load_capacity_config(conn).get("capacity_role_senior_ids")):
+            st.caption("Для фильтра по роли ведущего настройте роли руководителей в разделе «Конфигурация».")
         lead_load = st.number_input("Загрузка ведущего (%)", min_value=1, max_value=100,
                                    value=st.session_state.new_project_lead_load, key="new_proj_lead_load")
         df_statuses = repository.load_project_statuses(conn)
@@ -461,9 +480,10 @@ def render(conn, db_path=None):
         st.warning(msg)
         return
     df_emp_sorted = df_emp.sort_values('name')
+    df_lead_candidates = _get_lead_candidates_df(df_emp, conn)
 
     with st.expander("➕ Новый проект", expanded=False):
-        _render_new_project_form(conn, df_emp_sorted)
+        _render_new_project_form(conn, df_emp_sorted, df_lead_candidates)
 
     # Список проектов — всегда из БД, чтобы после обновления страницы или перезапуска приложения данные не сбрасывались
     st.subheader("Текущие проекты")
@@ -603,11 +623,14 @@ def render(conn, db_path=None):
                     if not hasattr(default_end, 'strftime'):
                         default_end = date.today() + timedelta(days=60)
                     df_emp_sorted_edit = df_emp.sort_values('name')
-                    lead_options = df_emp_sorted_edit['id'].tolist()
+                    lead_options = df_lead_candidates['id'].tolist() if not df_lead_candidates.empty else df_emp_sorted_edit['id'].tolist()
                     proj_lead_id = safe_int(proj.get('lead_id'), None)
+                    if proj_lead_id is not None and proj_lead_id not in lead_options:
+                        lead_options = [proj_lead_id] + lead_options
                     if proj_lead_id is None and lead_options:
                         proj_lead_id = lead_options[0]
                     lead_index = lead_options.index(proj_lead_id) if (lead_options and proj_lead_id in lead_options) else 0
+                    lead_format_df = df_emp_sorted_edit
 
                     with st.form(key=f"edit_form_{pid}"):
                         new_name = st.text_input("Название", value=proj['name'] or "", key=f"edit_name_{pid}")
@@ -616,7 +639,7 @@ def render(conn, db_path=None):
                             "Ведущий",
                             lead_options,
                             index=lead_index,
-                            format_func=lambda x: df_emp_sorted_edit[df_emp_sorted_edit['id'] == x]['name'].values[0],
+                            format_func=lambda x: lead_format_df[lead_format_df['id'] == x]['name'].values[0] if len(lead_format_df[lead_format_df['id'] == x]) else str(x),
                             key=f"edit_lead_{pid}",
                         )
                         new_lead_load = st.number_input("Загрузка ведущего %", min_value=1, max_value=100, value=safe_int(proj.get('lead_load_percent'), 100) or 100, key=f"edit_lead_load_{pid}")

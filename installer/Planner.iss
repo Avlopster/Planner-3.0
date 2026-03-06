@@ -2,7 +2,7 @@
 
 #define SourceDir "..\installer_sources"
 ; Version: bump when releasing a new installer (v2.1 = 2.1.0)
-#define MyAppVersion "3.0.2"
+#define MyAppVersion "3.0.3"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}

@@ -176,8 +176,12 @@ def read_mspdi_file(file_path: str) -> ET.Element:
     return tree.getroot()
 
 
-def get_mspdi_assigned_resources_by_task(root: ET.Element) -> dict:
-    """По Assignments, Resources и полю «Исполнитель» возвращает для каждого TaskUID список имён (для предпросмотра). Name или Initials."""
+def get_mspdi_assigned_resources_by_task(root: ET.Element) -> dict[int, list[str]]:
+    """
+    По Assignments, Resources и полю «Исполнитель» (ExtendedAttribute) возвращает для каждого
+    TaskUID список имён ресурсов. Используется для предпросмотра «Назначенные сотрудники» в UI.
+    Для отображения используется Name, при отсутствии — Initials.
+    """
     resources = parse_resources(root)
     assignments = parse_assignments(root)
     tasks = parse_tasks(root)
@@ -188,7 +192,7 @@ def get_mspdi_assigned_resources_by_task(root: ET.Element) -> dict:
         display = (r.get("Name") or r.get("Initials") or "").strip()
         if display:
             resource_uid_to_name[r["UID"]] = display
-    task_uid_to_names = {}
+    task_uid_to_names: dict[int, list[str]] = {}
     for a in assignments:
         task_uid = a.get("TaskUID")
         if task_uid is None:
@@ -205,8 +209,11 @@ def get_mspdi_assigned_resources_by_task(root: ET.Element) -> dict:
             continue
         for part in (executor or "").split(","):
             name = (part or "").strip()
-            if name and name not in task_uid_to_names.setdefault(uid, []):
-                task_uid_to_names[uid].append(name)
+            if not name:
+                continue
+            lst = task_uid_to_names.setdefault(uid, [])
+            if name not in lst:
+                lst.append(name)
     return task_uid_to_names
 
 
@@ -236,7 +243,11 @@ def _filter_phase_tasks(tasks: list[dict[str, Any]], only_leaf_tasks: bool) -> l
 
 
 def _compute_parent_uid_for_tasks(tasks: list[dict[str, Any]]) -> None:
-    """Для каждой задачи с OutlineLevel >= 1 проставляет parent_uid (UID последней предыдущей задачи с уровнем - 1)."""
+    """
+    Для каждой задачи с OutlineLevel >= 1 проставляет parent_uid:
+    UID последней предыдущей задачи с уровнем (OutlineLevel - 1).
+    Изменяет задачи in-place, добавляя ключ parent_uid (int | None).
+    """
     last_by_level: dict[int, int] = {}
     for t in tasks:
         level = t.get("OutlineLevel", 0)
@@ -248,16 +259,21 @@ def _compute_parent_uid_for_tasks(tasks: list[dict[str, Any]]) -> None:
 
 
 def _fill_summary_dates_from_children(tasks: list[dict[str, Any]]) -> None:
-    """Для сводных задач (Summary=1) без Start или Finish вычисляет даты по дочерним. Ожидает parent_uid."""
+    """
+    Для сводных задач (Summary=1) без Start или Finish вычисляет даты по дочерним задачам.
+    Изменяет задачи in-place. Ожидает, что у задач уже есть parent_uid.
+    """
     uid_to_task = {t["UID"]: t for t in tasks}
+    # Дети по parent_uid
     children: dict[int, list[dict[str, Any]]] = {}
     for t in tasks:
         pu = t.get("parent_uid")
         if pu is not None:
             children.setdefault(pu, []).append(t)
-
+    # Снизу вверх: для каждой задачи без дат — min/max по потомкам с датами
     def get_descendant_dates(uid: int) -> tuple[Optional[str], Optional[str]]:
-        start_dates, finish_dates = [], []
+        start_dates: list[str] = []
+        finish_dates: list[str] = []
         stack = [c["UID"] for c in children.get(uid, [])]
         while stack:
             u = stack.pop()
@@ -273,7 +289,9 @@ def _fill_summary_dates_from_children(tasks: list[dict[str, Any]]) -> None:
         return (min(start_dates) if start_dates else None, max(finish_dates) if finish_dates else None)
 
     for t in tasks:
-        if t.get("Summary") != 1 or (t.get("Start") and t.get("Finish")):
+        if t.get("Summary") != 1:
+            continue
+        if t.get("Start") and t.get("Finish"):
             continue
         start_d, finish_d = get_descendant_dates(t["UID"])
         if start_d:
@@ -288,11 +306,22 @@ def build_project_and_phases_from_mspdi(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     Строит структуры «проект» и «этапы» из корня MSPDI.
-    При only_leaf_tasks=False возвращает этапы с uid и parent_uid для иерархии; даты сводных — по дочерним.
+
+    Проект: name (из Title или первой задачи OutlineLevel=0), start_date, finish_date
+    (из метаданных или min/max по выбранным задачам).
+
+    Этапы: при only_leaf_tasks=False — все задачи с OutlineLevel >= 1 с датами (в т.ч. сводные;
+    даты сводных вычисляются по дочерним), с полями uid и parent_uid для иерархии.
+    При only_leaf_tasks=True — только листовые задачи (Summary=0), без иерархии.
+
+    Возвращает (project_dict, phases_list). project_dict: name, start_date, finish_date.
+    phases_list: список dict с name, start_date, end_date, completion_percent; при
+    only_leaf_tasks=False также uid, parent_uid (для импорта с иерархией).
     """
     meta = parse_project_meta(root)
     tasks = parse_tasks(root)
 
+    # Название проекта: из Title или из первой задачи уровня 0
     project_name = meta.get("title")
     if not project_name:
         for t in tasks:
@@ -304,11 +333,18 @@ def build_project_and_phases_from_mspdi(
 
     if only_leaf_tasks:
         phase_tasks = _filter_phase_tasks(tasks, only_leaf_tasks=True)
+        # Плоский список без parent_uid
         phases_list = [
-            {"name": t["Name"], "start_date": t["Start"], "end_date": t["Finish"], "completion_percent": t.get("PercentComplete", 0)}
+            {
+                "name": t["Name"],
+                "start_date": t["Start"],
+                "end_date": t["Finish"],
+                "completion_percent": t.get("PercentComplete", 0),
+            }
             for t in phase_tasks
         ]
     else:
+        # Все задачи уровня >= 1 для иерархии (сохраняем исходный индекс в списке tasks)
         phase_tasks = []
         for i, t in enumerate(tasks):
             if t.get("OutlineLevel", 0) >= 1:
@@ -316,16 +352,23 @@ def build_project_and_phases_from_mspdi(
                 phase_tasks.append(t)
         _compute_parent_uid_for_tasks(phase_tasks)
         _fill_summary_dates_from_children(phase_tasks)
+        # Только с заполненными датами
         phase_tasks = [t for t in phase_tasks if t.get("Start") and t.get("Finish")]
+        # Порядок: родители перед детьми (по уровню, затем по исходному порядку в XML)
         phase_tasks_sorted = sorted(phase_tasks, key=lambda t: (t.get("OutlineLevel", 1), t.get("_index", 0)))
         phases_list = [
             {
-                "name": t["Name"], "start_date": t["Start"], "end_date": t["Finish"],
-                "completion_percent": t.get("PercentComplete", 0), "uid": t["UID"], "parent_uid": t.get("parent_uid"),
+                "name": t["Name"],
+                "start_date": t["Start"],
+                "end_date": t["Finish"],
+                "completion_percent": t.get("PercentComplete", 0),
+                "uid": t["UID"],
+                "parent_uid": t.get("parent_uid"),
             }
             for t in phase_tasks_sorted
         ]
 
+    # Даты проекта: из метаданных или min/max по этапам
     start_dates = [p["start_date"] for p in phases_list if p.get("start_date")]
     finish_dates = [p["end_date"] for p in phases_list if p.get("end_date")]
     if meta.get("start_date"):
@@ -338,7 +381,12 @@ def build_project_and_phases_from_mspdi(
         project_start = project_start or meta.get("start_date")
         project_finish = project_finish or meta.get("finish_date")
 
-    project_dict = {"name": project_name, "start_date": project_start, "finish_date": project_finish}
+    project_dict = {
+        "name": project_name,
+        "start_date": project_start,
+        "finish_date": project_finish,
+    }
+
     return project_dict, phases_list
 
 
@@ -413,11 +461,19 @@ def import_mspdi_project_and_phases(
         if start_d > end_d:
             errors.append(f"Этап «{name}»: дата начала позже даты окончания")
             continue
-        parent_id = uid_to_phase_id.get(ph["parent_uid"]) if ph.get("parent_uid") is not None else None
+        parent_id: Optional[int] = None
+        if ph.get("parent_uid") is not None:
+            parent_id = uid_to_phase_id.get(ph["parent_uid"])
         try:
             phase_id = repository.insert_phase(
-                conn, project_id, name, DEFAULT_PHASE_TYPE,
-                start_d, end_d, ph.get("completion_percent", 0), parent_id=parent_id,
+                conn,
+                project_id,
+                name,
+                DEFAULT_PHASE_TYPE,
+                start_d,
+                end_d,
+                ph.get("completion_percent", 0),
+                parent_id=parent_id,
             )
             if phase_id is not None and ph.get("uid") is not None:
                 uid_to_phase_id[ph["uid"]] = phase_id
@@ -447,14 +503,16 @@ def _normalize_initials(value: Optional[str]) -> str:
     return " ".join(s.split()) if s else ""
 
 
-def _find_employee_id_by_name(employees_df, name: str):
-    """Ищет id сотрудника по имени: нормализация, при неудаче — без учёта регистра."""
+def _find_employee_id_by_name(employees_df: pd.DataFrame, name: str) -> Optional[int]:
+    """Ищет id сотрудника по имени: нормализованное сравнение, при неудаче — без учёта регистра."""
     norm = _normalize_resource_name(name)
     if not norm:
         return None
+    # Точное совпадение после нормализации
     match = employees_df[employees_df["name"].apply(lambda x: _normalize_resource_name(str(x)) == norm)]
     if not match.empty:
         return int(match.iloc[0]["id"])
+    # Запасной вариант: без учёта регистра (для совместимости с разным написанием в XML и БД)
     norm_lower = norm.lower()
     for _, row in employees_df.iterrows():
         if _normalize_resource_name(str(row.get("name", ""))).lower() == norm_lower:
@@ -462,10 +520,14 @@ def _find_employee_id_by_name(employees_df, name: str):
     return None
 
 
-def _find_employee_id(employees_df, name=None, initials=None):
+def _find_employee_id(
+    employees_df: pd.DataFrame,
+    name: Optional[str] = None,
+    initials: Optional[str] = None,
+) -> Optional[int]:
     """
     Ищет id сотрудника по инициалам (приоритет) и/или имени.
-    Сначала по полю initials в БД, при неудаче — по name.
+    Сначала попытка по полю initials в БД, при неудаче — по name.
     """
     if "initials" in employees_df.columns:
         init_norm = _normalize_initials(initials)
@@ -498,6 +560,8 @@ def import_mspdi_assignments(
     и при отсутствии реальных ресурсов — из ExtendedAttribute «Исполнитель» у задач.
 
     Сопоставление с сотрудниками в БД — по полю Initials (если задано), иначе по имени (нормализация пробелов/регистра).
+    Сопоставление Task UID → phase_id выполняется по порядку этапов.
+
     Возвращает (success_count, list_of_errors, list_of_not_found_names).
     """
     errors: list[str] = []
@@ -510,6 +574,7 @@ def import_mspdi_assignments(
     phases_df = phases_df[phases_df["project_id"] == project_id].sort_values("id").reset_index(drop=True)
     employees_df = repository.load_employees(conn)
 
+    # Маппинг Task UID → phase_id: при иерархии (only_leaf_tasks=False) порядок этапов в БД = порядок из build_project_and_phases_from_mspdi
     _, phases_list_for_order = build_project_and_phases_from_mspdi(root, only_leaf_tasks)
     if len(phases_list_for_order) != len(phases_df):
         errors.append(
