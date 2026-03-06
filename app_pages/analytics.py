@@ -9,6 +9,7 @@ import streamlit as st
 
 import config as app_config  # по контракту; в аналитике не используется (ACTIVE_STATUSES — в Ганте)
 import capacity as capacity_module
+import capacity_ui
 import components
 import load_calculator
 import repository
@@ -55,36 +56,22 @@ def render(conn):
         st.caption("Проектов можно взять — по годовой ёмкости (текущий год): макс. проектов в год с учётом состава и активных проектов.")
         _reason = capacity_result.get('capacity_reason', 'ok')
         if _reason == 'no_junior':
-            st.error("Для расчёта ёмкости нужны сотрудники с ролями для **младших** (n_junior). Назначьте роли в справочнике или настройте привязку ролей в разделе «Конфигурация».")
+            st.error("Для расчёта ёмкости нужны сотрудники с ролями для **технических специалистов**. Назначьте роли в справочнике или настройте привязку ролей в разделе «Конфигурация».")
         elif _reason == 'no_senior':
-            st.error("Для расчёта ёмкости нужны сотрудники с ролями для **старших** (n_senior). Назначьте роли в справочнике или настройте привязку ролей в разделе «Конфигурация».")
+            st.error("Для расчёта ёмкости нужны сотрудники с ролями для **руководителей**. Назначьте роли в справочнике или настройте привязку ролей в разделе «Конфигурация».")
         elif _reason == 'cycles_zero':
             F_val = capacity_result.get('effective_fund_F', 0)
             T_val = capacity_result.get('typical_days_T', 0)
             st.error(f"Годовая ёмкость нулевая: типовая длительность проекта (**{T_val}** дн.) не помещается в эффективный фонд (**{F_val}** дн.) в году. Уменьшите «Типовую длительность проекта» или увеличьте «Рабочих дней в году» в разделе «Конфигурация».")
         elif capacity_result['missing_employees'] > 0:
             st.error(f"⚠️ Для взятия ещё одного типового проекта не хватает {capacity_result['missing_employees']} сотрудников.")
-        # Рекомендация по набору персонала для увеличения ёмкости
-        _limited_a = capacity_result.get('capacity_limited_by')
-        _n_j_a = capacity_result.get('n_junior', 0)
-        _n_s_a = capacity_result.get('n_senior', 0)
-        _P_a = capacity_result.get('P', 0)
-        _cap_a = capacity_result.get('N_capacity', 0)
-        if _cap_a > 0 and _limited_a:
-            if _limited_a == 'juniors':
-                st.info(f"**Рекомендация по набору:** для увеличения числа проектов целесообразно нанять **младших** специалистов (роли для n_junior). Сейчас ёмкость ограничена числом младших (n_junior = {_n_j_a}); каждый новый младший при сохранении числа старших может дать дополнительный проект — см. блок «Прогноз» ниже.")
-            else:
-                st.info(f"**Рекомендация по набору:** для увеличения числа проектов целесообразно нанять **старших** специалистов (роли для n_senior). Сейчас ёмкость ограничена числом старших или лимитом одновременных проектов (n_senior = {_n_s_a}, P = {_P_a}). По формуле каждый проект ведёт ведущий (старший); пока P не вырастет, **найм младших не увеличит число проектов** — см. блок «Прогноз» ниже.")
-        # Явное уведомление о недостающих специалистах для новых/текущих проектов
-        mj_a = capacity_result.get('missing_juniors', 0)
-        ms_a = capacity_result.get('missing_seniors', 0)
-        if (mj_a + ms_a) > 0:
-            st.warning(f"**Прогноз:** для взятия новых или реализации текущих проектов не хватает: **{mj_a}** младших, **{ms_a}** старших специалистов.")
-        # Недостающее количество людей из-за перегрузок за выбранный период
         shortfall_a = load_calculator.overload_shortfall(conn, start_str, end_str)
-        if shortfall_a.get('equivalent_missing_fte', 0) > 0:
-            st.warning(f"В выбранном периоде из-за перегрузок эквивалентно не хватает **{shortfall_a['equivalent_missing_fte']}** сотрудников.")
-        # Прогноз при найме (с учётом запланированных проектов в году)
+        forecast_rows = capacity_ui.build_forecast_table_rows(
+            capacity_result, shortfall_a, period_label="выбранном периоде"
+        )
+        if forecast_rows:
+            df_forecast = pd.DataFrame(forecast_rows)
+            st.dataframe(df_forecast, column_config={"Блок": st.column_config.TextColumn("Блок", width="medium"), "Содержание": st.column_config.TextColumn("Содержание", width="large")}, hide_index=True)
         cap_j = capacity_result.get('capacity_if_add_1_junior', 0)
         cap_s = capacity_result.get('capacity_if_add_1_senior', 0)
         N_active_a = capacity_result.get('N_active', 0)
@@ -95,18 +82,18 @@ def render(conn):
             st.caption("С учётом уже запланированных проектов в году.")
             if extra_if_1_junior_a > 0 or extra_if_1_senior_a > 0:
                 if extra_if_1_junior_a > 0:
-                    st.markdown(f"- **+1 младший** (роли для n_junior): ёмкость станет {cap_j}, можно взять ещё **{extra_if_1_junior_a}** проект(ов).")
+                    st.markdown(f"- **+1 технический специалист:** ёмкость станет {cap_j}, можно взять ещё **{extra_if_1_junior_a}** проект(ов).")
                 if extra_if_1_senior_a > 0:
-                    st.markdown(f"- **+1 старший** (роли для n_senior): ёмкость станет {cap_s}, можно взять ещё **{extra_if_1_senior_a}** проект(ов).")
+                    st.markdown(f"- **+1 руководитель:** ёмкость станет {cap_s}, можно взять ещё **{extra_if_1_senior_a}** проект(ов).")
             else:
                 limited = capacity_result.get('capacity_limited_by')
                 n_j = capacity_result.get('n_junior', 0)
                 n_s = capacity_result.get('n_senior', 0)
                 P_val = capacity_result.get('P', 0)
                 if limited == 'juniors':
-                    st.markdown(f"При текущем составе дополнительный набор не увеличит число проектов: **ёмкость ограничена числом младших** (n_junior = {n_j}). Добавление старшего не даст новых проектов, пока не вырастет n_junior.")
+                    st.markdown(f"При текущем составе дополнительный набор не увеличит число проектов: **ёмкость ограничена числом технических специалистов** ({n_j}). Добавление руководителя не даст новых проектов, пока не вырастет число технических специалистов.")
                 elif limited == 'seniors':
-                    st.markdown(f"При текущем составе дополнительный набор не увеличит число проектов: **ёмкость ограничена числом старших или лимитом одновременных проектов** (n_senior = {n_s}, P = {P_val}). По формуле каждый проект ведёт один ведущий (старший); максимум одновременных проектов P = min(лимит, n_senior/x). Поэтому **найм младших не даст новых проектов** — нужны именно старшие.")
+                    st.markdown(f"При текущем составе дополнительный набор не увеличит число проектов: **ёмкость ограничена числом руководителей или лимитом одновременных проектов** ({n_s} руководителей, P = {P_val}). По формуле каждый проект ведёт один ведущий (руководитель); максимум одновременных проектов P = min(лимит, руководители/x). Поэтому **найм технических специалистов не даст новых проектов** — нужны именно руководители.")
                 else:
                     st.markdown("При текущем составе дополнительный набор не увеличит число проектов (ёмкость ограничена составом или параметрами формулы).")
         st.divider()
@@ -211,7 +198,7 @@ def render(conn):
         df_load_export = df_load.copy()
         overload_df = pd.DataFrame([{k: v for k, v in r.items() if k in ('Сотрудник', 'Дата', 'Загрузка', 'Подсказка')} for r in overload_report]) if overload_report else pd.DataFrame(columns=['Сотрудник', 'Дата', 'Загрузка', 'Подсказка'])
         summary_df = pd.DataFrame({
-            'Метрика': ['Всего человеко-дней', 'Использовано дней', 'Свободно дней', 'Проектов можно взять', 'Не хватает сотрудников', 'Не хватает младших', 'Не хватает старших', 'Эквивалент недостающих (перегрузки)'],
+            'Метрика': ['Всего человеко-дней', 'Использовано дней', 'Свободно дней', 'Проектов можно взять', 'Не хватает сотрудников', 'Не хватает технических специалистов', 'Не хватает руководителей', 'Эквивалент недостающих (перегрузки)'],
             'Значение': [summary['total_capacity_days'], summary['used_days'], summary['free_days'], capacity_result['projects_possible'], capacity_result['missing_employees'], capacity_result.get('missing_juniors', 0), capacity_result.get('missing_seniors', 0), shortfall_a.get('equivalent_missing_fte', 0)]
         })
         excel_out = io.BytesIO()
