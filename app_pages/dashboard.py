@@ -179,6 +179,23 @@ def render(conn, db_path=None):
             if forecast_rows:
                 df_forecast = pd.DataFrame(forecast_rows)
                 st.dataframe(df_forecast, column_config={"Блок": st.column_config.TextColumn("Блок", width="medium"), "Содержание": st.column_config.TextColumn("Содержание", width="large")}, hide_index=True)
+            overloaded = load_calculator.overloaded_employees_in_period(conn, start_str, end_str)
+            with st.expander("💡 Подсказка по оптимизации персонала"):
+                hint_rows = capacity_ui.build_optimization_hint_rows(
+                    capacity,
+                    shortfall,
+                    overload_by_employee=overloaded,
+                    period_label="30 дней",
+                )
+                if hint_rows:
+                    st.dataframe(
+                        pd.DataFrame(hint_rows),
+                        column_config={
+                            "Блок": st.column_config.TextColumn("Блок", width="medium"),
+                            "Содержание": st.column_config.TextColumn("Содержание", width="large"),
+                        },
+                        hide_index=True,
+                    )
             cap_j = capacity.get('capacity_if_add_1_junior', 0)
             cap_s = capacity.get('capacity_if_add_1_senior', 0)
             N_active = capacity.get('N_active', 0)

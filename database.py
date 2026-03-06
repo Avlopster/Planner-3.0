@@ -111,7 +111,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
                   code TEXT UNIQUE NOT NULL,
                   name TEXT NOT NULL,
                   is_active BOOLEAN DEFAULT 1,
-                  is_gantt_active BOOLEAN DEFAULT 0)''')
+                  is_gantt_active BOOLEAN DEFAULT 0,
+                  is_capacity BOOLEAN DEFAULT 0)''')
     # Проекты
     c.execute('''CREATE TABLE IF NOT EXISTS projects
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,18 +182,28 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     c.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status_id)")
     conn.commit()
 
+    # Миграция: колонка is_capacity в project_statuses
+    c.execute("PRAGMA table_info(project_statuses)")
+    status_columns = [col[1] for col in c.fetchall()]
+    if 'is_capacity' not in status_columns:
+        c.execute("ALTER TABLE project_statuses ADD COLUMN is_capacity BOOLEAN DEFAULT 0")
+        # Для существующих БД: в расчёте ёмкости участвует только «В работе».
+        c.execute("UPDATE project_statuses SET is_capacity = 1 WHERE code = 'in_progress'")
+        c.execute("UPDATE project_statuses SET is_capacity = 0 WHERE code <> 'in_progress'")
+    conn.commit()
+
     # Справочник статусов: заполнить по умолчанию, если пусто
     c.execute("SELECT COUNT(*) FROM project_statuses")
     if c.fetchone()[0] == 0:
-        for code, name, is_active, is_gantt in [
-            ('planned', 'Планируется', 1, 0),
-            ('in_progress', 'В работе', 1, 1),
-            ('completed', 'Завершён', 0, 0),
-            ('cancelled', 'Отменён', 0, 0),
+        for code, name, is_active, is_gantt, is_capacity in [
+            ('planned', 'Планируется', 1, 0, 0),
+            ('in_progress', 'В работе', 1, 1, 1),
+            ('completed', 'Завершён', 0, 0, 0),
+            ('cancelled', 'Отменён', 0, 0, 0),
         ]:
             c.execute(
-                "INSERT INTO project_statuses (code, name, is_active, is_gantt_active) VALUES (?, ?, ?, ?)",
-                (code, name, is_active, is_gantt),
+                "INSERT INTO project_statuses (code, name, is_active, is_gantt_active, is_capacity) VALUES (?, ?, ?, ?, ?)",
+                (code, name, is_active, is_gantt, is_capacity),
             )
         conn.commit()
 

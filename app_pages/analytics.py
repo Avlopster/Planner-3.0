@@ -13,7 +13,7 @@ import capacity_ui
 import components
 import load_calculator
 import repository
-from utils.chart_theme import COLOR_PALETTE, apply_chart_theme
+from utils.chart_theme import COLOR_PALETTE, apply_chart_theme, apply_weekly_date_axis
 from components import page_header
 
 
@@ -72,6 +72,23 @@ def render(conn):
         if forecast_rows:
             df_forecast = pd.DataFrame(forecast_rows)
             st.dataframe(df_forecast, column_config={"Блок": st.column_config.TextColumn("Блок", width="medium"), "Содержание": st.column_config.TextColumn("Содержание", width="large")}, hide_index=True)
+        overloaded_a = load_calculator.overloaded_employees_in_period(conn, start_str, end_str)
+        with st.expander("💡 Подсказка по оптимизации персонала"):
+            hint_rows = capacity_ui.build_optimization_hint_rows(
+                capacity_result,
+                shortfall_a,
+                overload_by_employee=overloaded_a,
+                period_label="выбранном периоде",
+            )
+            if hint_rows:
+                st.dataframe(
+                    pd.DataFrame(hint_rows),
+                    column_config={
+                        "Блок": st.column_config.TextColumn("Блок", width="medium"),
+                        "Содержание": st.column_config.TextColumn("Содержание", width="large"),
+                    },
+                    hide_index=True,
+                )
         cap_j = capacity_result.get('capacity_if_add_1_junior', 0)
         cap_s = capacity_result.get('capacity_if_add_1_senior', 0)
         N_active_a = capacity_result.get('N_active', 0)
@@ -140,7 +157,7 @@ def render(conn):
                            labels={'date': 'Дата', 'load': 'Загрузка (доля ставки)'})
             apply_chart_theme(fig2)
             fig2.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Перегрузка")
-            fig2.update_xaxes(tickformat="%d.%m.%Y")
+            apply_weekly_date_axis(fig2, tickfont_size=10, start_date=start_str, end_date=end_str)
             st.plotly_chart(fig2, width='stretch')
         st.divider()
 

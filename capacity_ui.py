@@ -55,3 +55,52 @@ def build_forecast_table_rows(
         rows.append({"Блок": "Прогноз (перегрузки)", "Содержание": text})
 
     return rows
+
+
+def build_optimization_hint_rows(
+    capacity: Dict[str, Any],
+    shortfall: Dict[str, Any],
+    overload_by_employee: List[Dict[str, Any]] = None,
+    period_label: str = "выбранном периоде",
+) -> List[Dict[str, str]]:
+    """
+    Строит строки для интерактивной подсказки по оптимизации персонала.
+    Использует существующую логику прогноза и добавляет краткий итог по перегруженным сотрудникам.
+    """
+    rows: List[Dict[str, str]] = []
+    rows.append(
+        {
+            "Блок": "Текущая картина",
+            "Содержание": (
+                f"В расчёте ёмкости сейчас учтено проектов: {capacity.get('N_active', 0)}. "
+                f"Проектов можно взять дополнительно: {capacity.get('projects_possible', 0)}."
+            ),
+        }
+    )
+
+    rows.extend(build_forecast_table_rows(capacity, shortfall, period_label=period_label))
+
+    overloaded = overload_by_employee or []
+    if overloaded:
+        top = overloaded[:3]
+        top_text = ", ".join(
+            f"{item.get('employee_name', '—')} ({item.get('overload_days', 0)} дн.; +{item.get('overload_ftedays', 0)} FTE-дн.)"
+            for item in top
+        )
+        rows.append(
+            {
+                "Блок": "Точки перегрузки",
+                "Содержание": (
+                    f"Наибольшая перегрузка в {period_label}: {top_text}."
+                ),
+            }
+        )
+
+    if len(rows) == 1:
+        rows.append(
+            {
+                "Блок": "Рекомендация",
+                "Содержание": "По текущим данным явных рекомендаций по оптимизации персонала не требуется.",
+            }
+        )
+    return rows

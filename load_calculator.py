@@ -9,6 +9,7 @@ import pandas as pd
 import config as app_config
 import repository
 from utils.date_utils import date_range_list, normalize_date
+from utils.type_utils import safe_int
 
 
 def _to_date(x) -> Optional[date]:
@@ -476,3 +477,55 @@ def overload_shortfall(
         'days_in_period': days_in_period,
         'equivalent_missing_fte': equivalent_missing_fte,
     }
+
+
+def overloaded_employees_in_period(
+    conn: sqlite3.Connection,
+    start_date: Union[date, str],
+    end_date: Union[date, str],
+) -> List[dict]:
+    """Список перегруженных сотрудников за период с краткими метриками."""
+    employees = repository.load_employees(conn)
+    if employees.empty:
+        return []
+    employee_ids = employees['id'].dropna().astype(int).tolist()
+    if not employee_ids:
+        return []
+
+    batch_df = employee_load_by_day_batch(conn, employee_ids, start_date, end_date)
+    if batch_df.empty:
+        return []
+
+    over = batch_df[batch_df['load'] > 1.0].copy()
+    if over.empty:
+        return []
+
+    over['overload_part'] = over['load'] - 1.0
+    grouped = (
+        over.groupby('employee_id')
+        .agg(
+            overload_days=('date', 'count'),
+            overload_ftedays=('overload_part', 'sum'),
+            avg_overload_percent=('overload_part', 'mean'),
+        )
+        .reset_index()
+    )
+
+    name_map = employees.set_index('id')['name'].to_dict()
+    out: List[dict] = []
+    for _, row in grouped.iterrows():
+        eid = safe_int(row['employee_id'])
+        if eid is None:
+            continue
+        out.append(
+            {
+                'employee_id': eid,
+                'employee_name': name_map.get(eid, repository.get_employee_name(conn, eid)),
+                'overload_days': int(row['overload_days']),
+                'overload_ftedays': round(float(row['overload_ftedays']), 2),
+                'avg_overload_percent': round(float(row['avg_overload_percent']) * 100, 1),
+            }
+        )
+
+    out.sort(key=lambda x: (x['overload_ftedays'], x['overload_days']), reverse=True)
+    return out

@@ -8,7 +8,7 @@ import streamlit as st
 
 import config as app_config
 import repository
-from utils.chart_theme import apply_chart_theme
+from utils.chart_theme import apply_chart_theme, apply_weekly_date_axis
 from utils.type_utils import safe_int
 
 
@@ -26,7 +26,20 @@ def render(conn):
         )
         if only_active:
             gantt_statuses = repository.get_gantt_active_statuses(conn)
-            df_proj = df_proj[df_proj['status_name'].fillna('Не указан').isin(gantt_statuses)].copy()
+            if not gantt_statuses:
+                df_proj = df_proj.iloc[0:0].copy()  # пустой список — не показывать проекты
+            elif 'status_name' in df_proj.columns:
+                status_series = df_proj['status_name'].fillna('Не указан').astype(str).str.strip()
+                allowed = {s.strip() for s in gantt_statuses}
+                df_proj = df_proj[status_series.isin(allowed)].copy()
+            else:
+                # fallback по status_id, если колонки status_name нет
+                allowed_names = {s.strip() for s in gantt_statuses}
+                def _keep(row):
+                    name = repository.get_status_name(conn, row.get('status_id'))
+                    return (name or 'Не указан').strip() in allowed_names
+                mask = df_proj.apply(_keep, axis=1)
+                df_proj = df_proj[mask].copy()
         if not df_proj.empty:
             df_proj = repository.sort_projects_by_status(df_proj)
             option_pairs = [
@@ -195,7 +208,9 @@ def render(conn):
                 apply_chart_theme(fig)
                 fig.update_yaxes(autorange=True)
                 fig.update_layout(height=gantt_height, bargap=0.15, margin=dict(t=40, b=40, l=left_margin, r=40))
-                fig.update_xaxes(tickformat="%d.%m.%Y", showgrid=True, gridwidth=0.5, linewidth=0.5, tickfont=dict(size=10))
+                gantt_start = df_tasks["Начало"].min() if not df_tasks.empty else None
+                gantt_end = df_tasks["Окончание"].max() if not df_tasks.empty else None
+                apply_weekly_date_axis(fig, tickfont_size=10, start_date=gantt_start, end_date=gantt_end)
                 fig.update_yaxes(tickfont=dict(size=11), linewidth=0.5)
                 # Уникальный key при каждом рендере страницы, чтобы не оставалось ссылок на старый
                 # медиафайл в Streamlit memory storage (избегаем MediaFileStorageError при переходе в Гант).

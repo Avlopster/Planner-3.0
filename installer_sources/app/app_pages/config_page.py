@@ -36,6 +36,7 @@ def render(conn, db_path=None):
     df_roles = repository.load_roles(conn)
     placeholders = repository.get_date_placeholders(conn)
     active_statuses = repository.get_active_statuses(conn)
+    capacity_statuses = repository.get_capacity_statuses(conn)
     gantt_statuses = repository.get_gantt_active_statuses(conn)
     annual_vacation = repository.get_config(conn, 'annual_vacation_days', app_config.ANNUAL_VACATION_DAYS_DEFAULT)
     try:
@@ -174,7 +175,7 @@ def render(conn, db_path=None):
 
     # ----- Блок: Статусы проектов -----
     with st.expander("📌 Статусы проектов"):
-        st.markdown("**Учитывать в отчётах и ёмкости** — проекты с отмеченным статусом входят в отчёты и расчёт годовой ёмкости. **Показывать в фильтре Ганта «Только активные»** — какие статусы отображать при включённом фильтре на диаграмме Ганта. Настройка в таблице справочника ниже.")
+        st.markdown("**В отчётах** — статус участвует в отчётных блоках. **В расчёте ёмкости** — статус учитывается как активный проект для расчёта «Проектов можно взять». **В фильтре Ганта** — статус показывается при фильтре «Только активные» на диаграмме Ганта.")
         df_statuses = repository.load_project_statuses(conn)
         if df_statuses.empty:
             st.caption("Справочник статусов пуст. Он заполняется при первом запуске миграций.")
@@ -186,22 +187,29 @@ def render(conn, db_path=None):
                     name = row['name']
                     code = row['code']
                     is_active = bool(row.get('is_active', False))
+                    is_capacity = bool(row.get('is_capacity', False))
                     is_gantt = bool(row.get('is_gantt_active', False))
-                    c1, c2, c3 = st.columns([2, 1, 1])
+                    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                     with c1:
                         st.write(f"**{name}** ({code})")
                     with c2:
-                        chk_active = st.checkbox("В отчётах/ёмкости", value=is_active, key=f"config_status_active_{sid}")
+                        chk_active = st.checkbox("В отчётах", value=is_active, key=f"config_status_active_{sid}")
                     with c3:
+                        chk_capacity = st.checkbox("В расчёте ёмкости", value=is_capacity, key=f"config_status_capacity_{sid}")
+                    with c4:
                         chk_gantt = st.checkbox("В фильтре Ганта", value=is_gantt, key=f"config_status_gantt_{sid}")
-                    updates.append((sid, chk_active, chk_gantt))
+                    updates.append((sid, chk_active, chk_gantt, chk_capacity))
                 if st.form_submit_button("Сохранить статусы"):
-                    for sid, is_active, is_gantt in updates:
-                        repository.update_project_status_flags(conn, sid, is_active, is_gantt)
+                    for sid, is_active, is_gantt, is_capacity in updates:
+                        repository.update_project_status_flags(conn, sid, is_active, is_gantt, is_capacity)
                     st.cache_data.clear()
                     st.success("Статусы сохранены.")
                     st.rerun()
-            st.caption("Текущие активные (отчёты/ёмкость): " + ", ".join(active_statuses) + ". Для Ганта: " + ", ".join(gantt_statuses))
+            st.caption(
+                "Для отчётов: " + ", ".join(active_statuses)
+                + ". Для расчёта ёмкости: " + ", ".join(capacity_statuses)
+                + ". Для Ганта: " + ", ".join(gantt_statuses)
+            )
 
     # ----- Блок: О системе -----
     with st.expander("ℹ️ О системе"):
@@ -224,5 +232,6 @@ def render(conn, db_path=None):
             'date_placeholder_start': repository.get_config(conn, 'date_placeholder_start', ''),
             'date_placeholder_end': repository.get_config(conn, 'date_placeholder_end', ''),
             'active_statuses': ', '.join(repository.get_active_statuses(conn)),
+            'capacity_statuses': ', '.join(repository.get_capacity_statuses(conn)),
             'gantt_active_statuses': ', '.join(repository.get_gantt_active_statuses(conn)),
         })

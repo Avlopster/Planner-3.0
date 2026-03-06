@@ -10,7 +10,7 @@ import streamlit as st
 import components
 import load_calculator
 import repository
-from utils.chart_theme import COLOR_PALETTE, apply_chart_theme
+from utils.chart_theme import COLOR_PALETTE, apply_chart_theme, apply_weekly_date_axis
 
 
 def render(conn):
@@ -128,7 +128,7 @@ def render(conn):
                     apply_chart_theme(fig)
                     fig.update_yaxes(autorange="reversed")
                     fig.update_layout(height=cal_height, bargap=0.15, margin=dict(t=40, b=40, l=80, r=40))
-                    fig.update_xaxes(tickformat="%d.%m.%Y", showgrid=True, gridwidth=0.5, linewidth=0.5, tickfont=dict(size=10))
+                    apply_weekly_date_axis(fig, tickfont_size=10, start_date=start_str, end_date=end_str)
                     fig.update_yaxes(tickfont=dict(size=10), linewidth=0.5)
                     st.plotly_chart(fig, width='stretch')
                 else:
@@ -231,7 +231,7 @@ def render(conn):
                         apply_chart_theme(fig1)
                         fig1.update_yaxes(autorange=True)
                         fig1.update_layout(height=dual_height1, bargap=0.15, margin=dict(t=40, b=40, l=80, r=40))
-                        fig1.update_xaxes(tickformat="%d.%m.%Y", showgrid=True, gridwidth=0.5, linewidth=0.5, tickfont=dict(size=10))
+                        apply_weekly_date_axis(fig1, tickfont_size=10, start_date=start_str, end_date=end_str)
                         fig1.update_yaxes(tickfont=dict(size=10), linewidth=0.5)
                         fig1.update_xaxes(range=date_range)
                         st.plotly_chart(fig1, width='stretch')
@@ -275,7 +275,7 @@ def render(conn):
                         apply_chart_theme(fig2)
                         fig2.update_yaxes(autorange="reversed")
                         fig2.update_layout(height=dual_height2, bargap=0.15, margin=dict(t=40, b=40, l=80, r=40))
-                        fig2.update_xaxes(tickformat="%d.%m.%Y", showgrid=True, gridwidth=0.5, linewidth=0.5, tickfont=dict(size=10))
+                        apply_weekly_date_axis(fig2, tickfont_size=10, start_date=start_str, end_date=end_str)
                         fig2.update_yaxes(tickfont=dict(size=10), linewidth=0.5)
                         fig2.update_xaxes(range=date_range)
                         st.plotly_chart(fig2, width='stretch')

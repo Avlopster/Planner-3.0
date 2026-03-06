@@ -76,7 +76,7 @@ def annual_project_capacity(conn: sqlite3.Connection, year: Optional[int] = None
         N_senior = P * cycles
         N_capacity = min(N_junior, N_senior) if (n_junior > 0 and n_senior > 0) else 0
 
-    active_statuses = repository.get_active_statuses(conn)
+    active_statuses = repository.get_capacity_statuses(conn)
     projects = repository.load_projects(conn)
     N_active = 0
     for _, proj in projects.iterrows():

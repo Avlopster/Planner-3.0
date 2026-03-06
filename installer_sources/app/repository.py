@@ -39,8 +39,17 @@ def load_vacations(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def load_project_statuses(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Справочник статусов проектов: id, code, name, is_active, is_gantt_active."""
-    df = pd.read_sql("SELECT id, code, name, is_active, is_gantt_active FROM project_statuses ORDER BY id", conn)
+    """Справочник статусов проектов: id, code, name, is_active, is_gantt_active, is_capacity."""
+    try:
+        df = pd.read_sql(
+            "SELECT id, code, name, is_active, is_gantt_active, is_capacity FROM project_statuses ORDER BY id",
+            conn,
+        )
+    except sqlite3.OperationalError:
+        # Для старых БД без колонки is_capacity.
+        df = pd.read_sql("SELECT id, code, name, is_active, is_gantt_active FROM project_statuses ORDER BY id", conn)
+        if 'is_capacity' not in df.columns:
+            df['is_capacity'] = False
     if not df.empty:
         for col in ('id',):
             if col in df.columns:
@@ -49,6 +58,8 @@ def load_project_statuses(conn: sqlite3.Connection) -> pd.DataFrame:
             df['is_active'] = df['is_active'].astype(bool)
         if 'is_gantt_active' in df.columns:
             df['is_gantt_active'] = df['is_gantt_active'].astype(bool)
+        if 'is_capacity' in df.columns:
+            df['is_capacity'] = df['is_capacity'].astype(bool)
     return df
 
 
@@ -530,6 +541,21 @@ def get_active_statuses(conn: sqlite3.Connection) -> Tuple[str, ...]:
     return _config_status_list(conn, 'active_statuses', app_config.ACTIVE_STATUSES)
 
 
+def get_capacity_statuses(conn: sqlite3.Connection) -> Tuple[str, ...]:
+    """Статусы проектов для расчёта годовой ёмкости. Из справочника project_statuses."""
+    try:
+        rows = conn.cursor().execute(
+            "SELECT name FROM project_statuses WHERE is_capacity = 1 ORDER BY id"
+        ).fetchall()
+        if rows:
+            return tuple(r[0] for r in rows)
+    except sqlite3.OperationalError as e:
+        record_error(e, user_message="Ошибка доступа к справочнику статусов проектов (ёмкость).")
+        get_db_logger().debug("get_capacity_statuses: %s", e)
+    # Обратная совместимость: для старых БД используем активные статусы.
+    return get_active_statuses(conn)
+
+
 def get_gantt_active_statuses(conn: sqlite3.Connection) -> Tuple[str, ...]:
     """Статусы для фильтра Ганта «Только активные». Из справочника project_statuses."""
     try:
@@ -544,11 +570,17 @@ def get_gantt_active_statuses(conn: sqlite3.Connection) -> Tuple[str, ...]:
     return _config_status_list(conn, 'gantt_active_statuses', app_config.GANTT_ONLY_ACTIVE_STATUSES)
 
 
-def update_project_status_flags(conn: sqlite3.Connection, status_id: int, is_active: bool, is_gantt_active: bool) -> None:
-    """Обновляет флаги is_active и is_gantt_active для статуса в справочнике."""
+def update_project_status_flags(
+    conn: sqlite3.Connection,
+    status_id: int,
+    is_active: bool,
+    is_gantt_active: bool,
+    is_capacity: bool,
+) -> None:
+    """Обновляет флаги is_active, is_gantt_active и is_capacity для статуса в справочнике."""
     conn.cursor().execute(
-        "UPDATE project_statuses SET is_active = ?, is_gantt_active = ? WHERE id = ?",
-        (1 if is_active else 0, 1 if is_gantt_active else 0, status_id),
+        "UPDATE project_statuses SET is_active = ?, is_gantt_active = ?, is_capacity = ? WHERE id = ?",
+        (1 if is_active else 0, 1 if is_gantt_active else 0, 1 if is_capacity else 0, status_id),
     )
     conn.commit()
 
